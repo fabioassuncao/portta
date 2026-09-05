@@ -53,7 +53,7 @@ it "strips single quotes"           ; assert_eq "single" "${PORTTA_TEST_SINGLE:-
 it "keeps empty values empty"       ; assert_eq "" "${PORTTA_TEST_EMPTY-unset}"
 it "tolerates a leading 'export'"   ; assert_eq "exported" "${PORTTA_TEST_EXPORTED:-}"
 it "keeps '=' inside a value"       ; assert_eq "a=b=c" "${PORTTA_TEST_EQUALS:-}"
-it "lets the shell environment win" ; assert_eq "fromshell" "${PORTTA_TEST_PRESET:-}"
+it "lets the installation file win" ; assert_eq "fromfile" "${PORTTA_TEST_PRESET:-}"
 it "does not execute substitutions" ; assert_failure test -e /tmp/portta-should-not-exist
 
 describe "portta_defaults: an empty .env still yields a working local gateway"
@@ -95,7 +95,7 @@ it "and never replaces the file"
 assert_eq "$inode_before" "$(ls -i "$env_file" | awk '{print $1}')"
 
 it "leaving no temporary behind"
-assert_eq ".env" "$(ls -A "$env_dir" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq ".env .env-lock" "$(ls -A "$env_dir" | tr '\n' ' ' | sed 's/ $//')"
 
 it "and still owner-only"
 assert_eq "-rw-------" "$(ls -l "$env_file" | cut -c1-10)"

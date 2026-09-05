@@ -11,9 +11,10 @@
 // just as readily. `scripts/lib/toolbox.sh` survives for the zero-Node path.
 
 import { PreconditionError } from './errors.js'
+import { porttaImages } from 'portta-core'
 import { runProcess } from './process.js'
-
-export const TOOLBOX_IMAGE = 'fabioassuncao/portta-toolbox:0.1.0'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 export interface ToolboxOptions {
   /** Bind mounts as `host:container[:mode]`. */
@@ -25,17 +26,19 @@ export interface ToolboxOptions {
   input?: string
 }
 
-export async function toolboxExists(image = TOOLBOX_IMAGE): Promise<boolean> {
+export async function toolboxExists(image: string): Promise<boolean> {
   return !(await runProcess('docker', ['image', 'inspect', image], { reject: false })).failed
 }
 
 /** Build the image if it is not present. First use only. */
-export async function ensureToolbox(root: string, image = TOOLBOX_IMAGE): Promise<void> {
-  if (await toolboxExists(image)) return
-  const built = await runProcess('docker', ['build', '-q', '-t', image, `${root}/docker/images/toolbox`], { reject: false })
+export async function ensureToolbox(root: string, version: string): Promise<string> {
+  const image = porttaImages(version).toolbox
+  if (await toolboxExists(image)) return image
+  const built = await runProcess('docker', ['build', '-q', '--build-arg', `PORTTA_VERSION=${version}`, '-t', image, `${root}/docker/images/toolbox`], { reject: false })
   if (built.failed) {
     throw new PreconditionError('could not build the toolbox image', `docker build -t ${image} docker/images/toolbox/`)
   }
+  return image
 }
 
 /**
@@ -43,12 +46,13 @@ export async function ensureToolbox(root: string, image = TOOLBOX_IMAGE): Promis
  * privileges, and no network unless the caller names one.
  */
 export async function runInToolbox(root: string, args: string[], options: ToolboxOptions = {}) {
-  await ensureToolbox(root)
+  const version = readFileSync(join(root, 'VERSION'), 'utf8').trim()
+  const image = await ensureToolbox(root, version)
   const flags = ['run', '--rm']
   if (options.input !== undefined) flags.push('-i')
   flags.push('--network', options.network ?? 'none')
   for (const volume of options.volumes ?? []) flags.push('--volume', volume)
   for (const [key, value] of Object.entries(options.env ?? {})) flags.push('--env', `${key}=${value}`)
-  flags.push(TOOLBOX_IMAGE, ...args)
+  flags.push(image, ...args)
   return runProcess('docker', flags, { input: options.input, reject: false })
 }

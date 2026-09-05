@@ -1,11 +1,11 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { randomBytes } from 'node:crypto'
+import { patchEnvFile, prepareEnvFile } from 'portta-core'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { AUTH_BUILD_FILE, LOCAL_PORTA_IMAGE, dashboardExposeRefusal, parseAliases, projectsFor, readEnvFile, routesFor, setEnvValue, writeEnvFile, type StoredAlias } from 'portta-core'
+import { AUTH_BUILD_FILE, AUTH_DEV_FILE, dashboardExposeRefusal, parseAliases, projectsFor, routesFor, type StoredAlias } from 'portta-core'
 import type { Command } from 'commander'
 import { composeArguments, gatewayContext } from '../context.js'
 import { ensureNetwork, identifier, inspectContainers, networkExists, requireDocker } from '../docker.js'
-import { CliError, EXIT, RefusedError } from '../errors.js'
+import { CliError, EXIT, PreconditionError, RefusedError } from '../errors.js'
 import { Output } from '../output.js'
 import { runProcess } from '../process.js'
 import { CLI_VERSION } from '../version.js'
@@ -15,38 +15,38 @@ import { ensureApplier, removeApplier } from './apply.js'
 import { ensureRunner, removeRunner } from './runner.js'
 import { refreshRepositories } from './repos.js'
 import { ensureMetricsCollector, stopMetricsCollector } from './host.js'
-import { webUp } from './web.js'
+import { finishWebUp, prepareWebUp } from './web.js'
+import { requireLocalRelease, selectLocalRelease } from '../local-release.js'
 import { applyDemo, demoStacksDown } from './examples.js'
 
 export function checkoutLocalEnv(): Record<string, string> {
   return {
     PORTTA_WEB: 'true',
     PORTTA_WEB_DEV: 'true',
-    PORTTA_WEB_BUILD: 'true',
-    PORTTA_AUTH_IMAGE: LOCAL_PORTA_IMAGE,
-    PORTTA_WEB_IMAGE: LOCAL_PORTA_IMAGE,
+    PORTTA_WEB_BUILD: 'false',
+    PORTTA_AUTH_IMAGE: '',
+    PORTTA_WEB_IMAGE: '',
   }
 }
 
 function persistEnv(root: string, values: Record<string, string>): void {
   const path = join(root, '.env')
-  let text = readEnvFile(path)
-  for (const [key, value] of Object.entries(values)) text = setEnvValue(text, key, value)
-  writeEnvFile(path, text)
+  patchEnvFile(path, values)
 }
 
 function buildsLocally(command: Command): boolean {
-  return gatewayContext({ profile: globals(command).profile }).composeFiles.includes(AUTH_BUILD_FILE)
+  const files = gatewayContext({ profile: globals(command).profile }).composeFiles
+  return files.includes(AUTH_BUILD_FILE) || files.includes(AUTH_DEV_FILE)
 }
 
 function globals(command: Command) {
   return command.optsWithGlobals() as { json?: boolean; yes?: boolean; quiet?: boolean; verbose?: boolean; profile?: string }
 }
 
-async function compose(command: Command, args: string[], stdio: 'inherit' | 'pipe' = 'inherit') {
+async function compose(command: Command, args: string[], stdio: 'inherit' | 'pipe' = 'inherit', extra: { reject?: boolean } = {}) {
   const options = globals(command)
   const context = gatewayContext({ profile: options.profile })
-  return runProcess('docker', ['compose', ...composeArguments(context), ...args], { cwd: context.root, env: context.env, stdio })
+  return runProcess('docker', ['compose', ...composeArguments(context), ...args], { cwd: context.root, env: context.env, stdio, reject: extra.reject })
 }
 
 export function authMigrationRunArguments(build: boolean, user?: string): string[] {
@@ -63,10 +63,7 @@ function ensureAuthState(root: string): void {
   mkdirSync(authDirectory, { recursive: true, mode: 0o700 })
   chmodSync(authDirectory, 0o700)
   const path = join(root, '.env')
-  const current = readEnvFile(path)
-  if (!/^PORTTA_AUTH_SECRET=.+$/m.test(current)) {
-    writeEnvFile(path, setEnvValue(current, 'PORTTA_AUTH_SECRET', randomBytes(32).toString('hex')))
-  }
+  prepareEnvFile(path)
 }
 
 /**
@@ -80,7 +77,8 @@ async function migrateAuthState(command: Command): Promise<void> {
   const user = typeof process.getuid === 'function'
     ? `${process.getuid()}:${process.getgid?.() ?? 0}`
     : undefined
-  await compose(command, authMigrationRunArguments(context.composeFiles.includes(AUTH_BUILD_FILE), user))
+  const build = context.composeFiles.includes(AUTH_BUILD_FILE) || context.composeFiles.includes(AUTH_DEV_FILE)
+  await compose(command, authMigrationRunArguments(build, user))
 }
 
 /** major.minor, which is the granularity the API contract moves at. */
@@ -157,25 +155,24 @@ export async function bootstrapCommand(options: { skipPull?: boolean }, command:
   await requireDocker()
   const composeVersion = await runProcess('docker', ['compose', 'version', '--short'], { reject: false })
   if (composeVersion.exitCode !== 0) throw new CliError('Docker Compose v2 is required', EXIT.precondition)
-  if (!existsSync(join(context.root, '.env'))) {
-    copyFileSync(join(context.root, '.env.example'), join(context.root, '.env'))
-    output.progress('created  .env from .env.example')
-  }
+  prepareEnvFile(join(context.root, '.env'))
   for (const directory of ['state', 'state/auth', 'state/git', 'state/github', 'state/metrics', 'state/logs', 'config/tls', 'config/traefik/dynamic']) mkdirSync(join(context.root, directory), { recursive: true })
   ensureAuthState(context.root)
   const network = await ensureNetwork(context.config.network)
   output.progress(`${network.padEnd(8)} shared network ${context.config.network}`)
-  // `--ignore-buildable` because a checkout adds `auth-build.yaml`, which gives
-  // the auth services a `build:` and a local tag. Without it Compose tries to
-  // pull an image that only ever exists after `docker compose build`, and a
-  // registry it was never pushed to answers "access denied".
+  // Explicit build/dev overlays carry checkout-only tags. Ignore those while
+  // pulling the remaining pinned images; normal local-release runs select no
+  // build overlay and are preflighted by `just up` instead.
   if (!options.skipPull) await compose(command, ['pull', '--ignore-buildable'])
   await doctorCommand(command)
 }
 
-export async function upCommand(profile: string | undefined, options: { attach?: boolean; demo?: boolean }, command: Command): Promise<void> {
+export async function upCommand(profile: string | undefined, options: { attach?: boolean; demo?: boolean; localRelease?: boolean }, command: Command): Promise<void> {
   if (profile) command.setOptionValueWithSource('profile', profile, 'cli')
+  prepareEnvFile(join(gatewayContext({ profile: profile ?? globals(command).profile }).root, '.env'))
+  if (options.localRelease) selectLocalRelease(gatewayContext({ profile: profile ?? globals(command).profile }))
   const context = gatewayContext({ profile: profile ?? globals(command).profile })
+  if (options.localRelease) context.env['PORTTA_LOCAL_RELEASE'] = 'true'
   if (context.config.profile === 'remote-public' && context.config.tcpEnabled) throw new RefusedError('TCP entrypoints must not run on the remote-public profile')
   // `vpn` routes the panel on the tailnet hostname; with Traefik bound to every
   // interface that router answers the internet too, which is not what the mode
@@ -190,6 +187,7 @@ export async function upCommand(profile: string | undefined, options: { attach?:
   const builds = buildsLocally(command)
   output.step('gateway components')
   await requireDocker()
+  await requireLocalRelease(context)
   // Both networks are `external: true` in the overlays, so Compose refuses to
   // start until they exist. The shell entry point creates both; this created
   // only the shared one, so `PORTTA_TCP=true portta up` failed here and
@@ -204,12 +202,20 @@ export async function upCommand(profile: string | undefined, options: { attach?:
     : 'migrating the authentication schema')
   await migrateAuthState(command)
   output.progress(builds ? 'starting components, building local images' : 'starting components')
-  await compose(command, [
+  const wait = !options.attach
+  const started = await compose(command, [
     'up',
     options.attach ? '' : '-d',
     ...(builds ? ['--build'] : []),
     options.attach ? '' : '--remove-orphans',
-  ].filter(Boolean))
+    ...(wait ? ['--wait', '--wait-timeout', '180'] : []),
+  ].filter(Boolean), 'inherit', wait ? { reject: false } : {})
+  if (wait && started.exitCode !== 0) {
+    throw new PreconditionError(
+      'the gateway did not report healthy within 180s',
+      'portta logs   shows what it is doing; portta doctor checks the rest',
+    )
+  }
 
   await refreshRepositories(context.config.profile, output)
   await ensureMetricsCollector(context.config.profile, output)
@@ -268,8 +274,11 @@ export async function devCommand(
     await bootstrapCommand({ skipPull: true }, command)
   }
   persistEnv(gatewayContext({ profile: profile ?? globals(command).profile }).root, checkoutLocalEnv())
+  // Prepare the panel's credentials, ownership and generated ForwardAuth
+  // state before the one Compose convergence that starts the whole gateway.
+  const panel = prepareWebUp({ dev: true }, command)
   await upCommand(profile, { attach: false }, command)
-  await webUp({ dev: true }, command)
+  await finishWebUp(panel, command, false)
   if (options.demo) await applyDemo(command, { ensurePanel: false })
   await urlsCommand({}, command)
 }
@@ -329,7 +338,7 @@ export async function resetCommand(options: { demo?: boolean }, command: Command
   await devCommand(undefined, { reset: true, demo: options.demo }, command)
 }
 
-export async function restartCommand(command: Command): Promise<void> { await compose(command, ['up', '-d', '--force-recreate']) }
+export async function restartCommand(command: Command): Promise<void> { await compose(command, ['up', '-d', '--force-recreate', '--wait', '--wait-timeout', '180']) }
 export async function logsCommand(service: string | undefined, options: { follow?: boolean; tail?: string }, command: Command): Promise<void> {
   const global = globals(command)
   if (global.json) {
@@ -339,17 +348,18 @@ export async function logsCommand(service: string | undefined, options: { follow
 }
 
 export async function updateCommand(command: Command): Promise<void> {
+  prepareEnvFile(join(gatewayContext({ profile: globals(command).profile }).root, '.env'))
   await compose(command, ['config', '--quiet'])
   await compose(command, ['pull', '--ignore-buildable'])
   await confirm('recreate gateway components with the pulled images?', globals(command).yes === true)
-  await compose(command, ['up', '-d', '--force-recreate'])
+  await compose(command, ['up', '-d', '--force-recreate', '--wait', '--wait-timeout', '180'])
 }
 
 export async function inspectCommand(command: Command): Promise<void> {
   const options = globals(command)
   const context = gatewayContext({ profile: options.profile })
   const output = new Output(options)
-  const secrets = new Set(['TS_AUTHKEY', 'CLOUDFLARE_API_TOKEN', 'PORTTA_RUNTIME_DB_PASSWORD', 'PORTTA_WEB_AUTH_HASH', 'PORTTA_AUTH_SECRET'])
+  const secrets = new Set(['TS_AUTHKEY', 'CF_DNS_API_TOKEN', 'PORTTA_RUNTIME_DATABASE_URL', 'PORTTA_RUNTIME_DB_PASSWORD', 'PORTTA_AUTH_SECRET'])
   const configuration = Object.fromEntries(Object.entries(context.env).filter(([key]) => key.startsWith('PORTTA_') || ['TLS_ENABLED', 'TLS_MODE', 'PUBLIC_DOMAIN', 'PRIVATE_DOMAIN', 'TAILSCALE_ENABLED'].includes(key)).map(([key, value]) => [key, secrets.has(key) ? (value ? '<set>' : '<unset>') : value]))
   if (output.json) output.data({ profile: context.config.profile, configuration, composeFiles: context.composeFiles })
   else {

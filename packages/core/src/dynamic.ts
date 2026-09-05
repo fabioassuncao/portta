@@ -1,4 +1,3 @@
-export const PANEL_AUTH_MIDDLEWARE = 'portta-web-auth'
 export const FORWARD_AUTH_MIDDLEWARE = 'portta-forward-auth'
 export const AUTH_SERVICE = 'portta-auth'
 export const AUTH_PATH_PREFIX = '/__portta/auth'
@@ -30,7 +29,12 @@ function ruleHost(authority: string): string {
   try { return new URL(`http://${authority}`).hostname } catch { return authority }
 }
 
-/** The shared ForwardAuth service, middleware and unprotected login routers. */
+/**
+ * The shared ForwardAuth service, middleware and unprotected login routers.
+ *
+ * Projects and shares only. The panel signs people in itself and never passes
+ * through this middleware, which is why no scope here is `panel`.
+ */
 export function renderAuthDynamic(store: ProtectionStore): string {
   const lines = [
     '# ============================================================================',
@@ -61,23 +65,25 @@ export function renderAuthDynamic(store: ProtectionStore): string {
     '      forwardAuth:',
     `        address: ${quoteDynamicValue('http://portta-auth:4180/verify')}`,
     '        trustForwardHeader: true',
-    '        authResponseHeaders: [X-Forwarded-User, X-Portta-Actor, X-Portta-Actor-Kind, X-Portta-Capabilities, X-Portta-Token-Authenticated]',
-    `    ${PANEL_AUTH_MIDDLEWARE}:`,
-    '      forwardAuth:',
-    `        address: ${quoteDynamicValue('http://portta-auth:4180/verify?scope=panel')}`,
-    '        trustForwardHeader: true',
-    '        authResponseHeaders: [X-Forwarded-User, X-Portta-Actor, X-Portta-Actor-Kind, X-Portta-Capabilities, X-Portta-Token-Authenticated]',
+    '        authResponseHeaders: [X-Forwarded-User, X-Portta-Actor, X-Portta-Actor-Kind]',
     '',
   )
   return lines.join('\n')
 }
 
-/** Legacy panel filename retained as a credential-free compatibility stub. */
-export function renderPanelAuth(_options: { user: string; hash: string } | null): string {
+/**
+ * The panel's dynamic file, which now declares nothing.
+ *
+ * It is still written, and written empty, because an upgrade has to *replace*
+ * whatever an older Portta left here — a BasicAuth hash, a ForwardAuth
+ * middleware — and a file that is merely no longer updated keeps working.
+ * See docs/adr/0035-authentication-lives-in-the-panel.md.
+ */
+export function renderPanelAuth(): string {
   return [
     ...PANEL_HEADER,
-    '# Panel authentication now lives in portta-auth.yaml. This filename is',
-    '# retained so upgrades replace the old BasicAuth hash with comments.',
-    '# See docs/adr/0027-forward-authentication-service.md.',
+    '# The panel authenticates its own requests: it is a Next application with',
+    '# Better Auth behind it, not a router with a credential in front of it.',
+    '# Nothing routes through Traefik middleware to reach it any more.',
   ].join('\n') + '\n'
 }

@@ -109,7 +109,7 @@ else
   ts_args=$(PORTTA_VERSION="$(portta_version)" node --input-type=module -e '
     import { runnerCreateArguments, runnerSpec } from "'"$PORTTA_ROOT"'/packages/core/dist/runner.js"
     const root = process.env.PORTTA_ROOT
-    process.stdout.write(runnerCreateArguments(root, runnerSpec(root, process.env.PORTTA_VERSION)).join("\n"))
+    process.stdout.write(runnerCreateArguments(root, runnerSpec(root, process.env.PORTTA_VERSION), process.env.PORTTA_VERSION).join("\n"))
   ' 2>/dev/null)
 
   it "argument for argument"

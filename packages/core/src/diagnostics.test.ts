@@ -143,54 +143,68 @@ describe('the Traefik dashboard', () => {
     expect(dashboardVerdict(true, '0.0.0.0', '8080').status).toBe('fail')
   })
 
-  it('refuses a dashboard on the domain without a credential or a real domain', () => {
-    expect(dashboardExposeRefusal({ PORTTA_DASHBOARD: 'true', PORTTA_DASHBOARD_EXPOSE: 'domain' })).toMatch(/domain/)
-    expect(dashboardExposeRefusal({
-      PORTTA_DASHBOARD: 'true', PORTTA_DASHBOARD_EXPOSE: 'domain', PORTTA_DOMAIN: 'dev.example.com',
-    })).toMatch(/credential/)
+  it('refuses a dashboard routed on a domain, whatever else is configured', () => {
+    expect(dashboardExposeRefusal({ PORTTA_DASHBOARD: 'true', PORTTA_DASHBOARD_EXPOSE: 'domain' }))
+      .toMatch(/no credential of its own/)
     expect(dashboardExposeRefusal({
       PORTTA_DASHBOARD: 'true',
       PORTTA_DASHBOARD_EXPOSE: 'domain',
       PORTTA_DOMAIN: 'dev.example.com',
-      PORTTA_WEB_AUTH: 'basic',
-      PORTTA_WEB_AUTH_USER: 'op',
-      PORTTA_WEB_AUTH_HASH: 'hash',
-    })).toBeNull()
+      PORTTA_DASHBOARD_ADVERTISED_HOST: 'router.dev.example.com',
+    })).toMatch(/no credential of its own/)
+  })
+
+  it('says nothing about a dashboard on loopback, or one that is off', () => {
+    expect(dashboardExposeRefusal({ PORTTA_DASHBOARD: 'true', PORTTA_DASHBOARD_EXPOSE: 'local' })).toBeNull()
+    expect(dashboardExposeRefusal({ PORTTA_DASHBOARD: 'false', PORTTA_DASHBOARD_EXPOSE: 'domain' })).toBeNull()
   })
 })
 
 describe('the panel front door', () => {
   const base = {
     expose: 'local', bindAddress: '127.0.0.1', port: '8081',
-    authMode: 'none', authUser: '', authHash: '', middlewareRendered: false, readOnly: false,
+    authMode: 'disabled', secretPresent: false, legacyPanelAuth: false, readOnly: false,
   }
   const byId = (checks: ReturnType<typeof panelAuthVerdicts>) => Object.fromEntries(checks.map((entry) => [entry.id, entry]))
 
-  it('needs no credential on loopback', () => {
+  it('needs nobody to sign in on loopback', () => {
     expect(byId(panelAuthVerdicts(base))['web.auth']?.status).toBe('pass')
   })
 
-  // The tailnet is the boundary there, and a better one than a password.
-  it('treats the tailnet as the boundary', () => {
-    expect(byId(panelAuthVerdicts({ ...base, expose: 'tailscale' }))['web.auth']?.status).toBe('pass')
+  // The tailnet is a boundary, and it is not the only one the panel needs: a
+  // tailnet has other people on it, and the panel can stop every container.
+  it('fails a panel published on the tailnet that asks nobody who they are', () => {
+    const checks = byId(panelAuthVerdicts({ ...base, expose: 'tailscale', bindAddress: '100.64.0.2' }))
+    expect(checks['web.auth']?.status).toBe('fail')
+    expect(checks['web.auth']?.fix).toMatch(/panel\.auth required/)
   })
 
   it('fails a routed panel with nothing in front of it', () => {
     const checks = byId(panelAuthVerdicts({ ...base, expose: 'public' }))
     expect(checks['web.auth']?.status).toBe('fail')
-    expect(checks['web.auth']?.fix).toBe('portta web auth set')
+    expect(checks['web.auth']?.fix).toMatch(/panel\.auth required/)
   })
 
-  // A middleware Traefik cannot resolve makes the router fail closed, so a
-  // missing file locks the operator out rather than opening the panel.
-  it('fails a credential whose middleware was never rendered', () => {
-    const configured = { ...base, expose: 'public', authMode: 'basic', authUser: 'dev', authHash: 'x' }
-    expect(byId(panelAuthVerdicts(configured))['web.auth.file']?.status).toBe('fail')
-    expect(byId(panelAuthVerdicts({ ...configured, middlewareRendered: true }))['web.auth.file']?.status).toBe('pass')
+  it('passes a routed panel that signs people in', () => {
+    const checks = byId(panelAuthVerdicts({ ...base, expose: 'public', authMode: 'required', secretPresent: true }))
+    expect(checks['web.auth']?.status).toBe('pass')
+    expect(checks['web.auth.secret']?.status).toBe('pass')
   })
 
-  it('warns about a routed panel that can still stop containers', () => {
-    const routed = { ...base, expose: 'public', authMode: 'basic', authUser: 'dev', authHash: 'x', middlewareRendered: true }
+  // Without it the panel process refuses to boot, so this is a host that will
+  // not come up rather than one that is quietly open.
+  it('fails required mode with no secret to sign sessions with', () => {
+    const checks = byId(panelAuthVerdicts({ ...base, authMode: 'required', secretPresent: false }))
+    expect(checks['web.auth.secret']?.status).toBe('fail')
+  })
+
+  it('says when an upgraded host still carries the old Traefik credential', () => {
+    expect(byId(panelAuthVerdicts({ ...base, legacyPanelAuth: true }))['web.auth.legacy']?.status).toBe('warn')
+    expect(byId(panelAuthVerdicts(base))['web.auth.legacy']).toBeUndefined()
+  })
+
+  it('warns about a reachable panel that can still stop containers', () => {
+    const routed = { ...base, expose: 'public', authMode: 'required', secretPresent: true }
     expect(byId(panelAuthVerdicts(routed))['web.readonly']?.status).toBe('warn')
     expect(byId(panelAuthVerdicts({ ...routed, readOnly: true }))['web.readonly']).toBeUndefined()
     // Not a finding on loopback: nothing outside the host can reach it.

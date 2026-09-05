@@ -8,16 +8,11 @@ import { migrateLegacyState } from './migrate.ts'
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'portta-auth-migrate-'))
   const options = {
-    envPath: join(root, '.env'), sharesPath: join(root, 'dynamic/portta-shares.yaml'),
+    sharesPath: join(root, 'dynamic/portta-shares.yaml'),
     storePath: join(root, 'auth/protections.json'), authDynamicPath: join(root, 'dynamic/portta-auth.yaml'),
     panelDynamicPath: join(root, 'dynamic/portta-panel.yaml'),
   }
   mkdirSync(join(root, 'dynamic'))
-  writeFileSync(options.envPath, [
-    'PORTTA_WEB_AUTH=basic', 'PORTTA_WEB_AUTH_USER=dev',
-    'PORTTA_WEB_AUTH_HASH=$apr1$abcdefgh$ckT15POyCRlen.h6XtGAZ1',
-    'PORTTA_WEB_EXPOSE=vpn', 'PORTTA_WEB_HOST=portta-web', 'PORTTA_DOMAIN=dev.example.com', 'TLS_ENABLED=true',
-  ].join('\n'))
   const shares = [{ id: 'a7f3', host: 'store-a7f3.share.dev.example.com', entryPoint: 'websecure', mode: 'protected', user: 'reviewer', hash: '$apr1$abcdefgh$ckT15POyCRlen.h6XtGAZ1', project: 'store', service: 'web', container: 'store-web-1', port: 3000 }]
   writeFileSync(options.sharesPath, `${SHARES_MARKER}${JSON.stringify(shares)}\n`)
   writeFileSync(options.panelDynamicPath, 'http:\n  middlewares:\n    old:\n      basicAuth: {}\n')
@@ -25,11 +20,13 @@ function fixture() {
 }
 
 describe('legacy auth migration', () => {
-  it('lifts panel and share credentials before rendering ForwardAuth', () => {
+  // Shares only: the panel's own credential is not lifted here any more,
+  // because the panel does not have one — it signs people in itself.
+  it('lifts share credentials before rendering ForwardAuth', () => {
     const options = fixture()
-    expect(migrateLegacyState(options)).toEqual({ migrated: 2, protections: 2 })
+    expect(migrateLegacyState(options)).toEqual({ migrated: 1, protections: 1 })
     const store = readProtectionStore(options.storePath)
-    expect(store.protections.map((item) => item.scope)).toEqual(['panel', 'share:a7f3'])
+    expect(store.protections.map((item) => item.scope)).toEqual(['share:a7f3'])
     const yaml = readFileSync(options.authDynamicPath, 'utf8')
     expect(yaml).toContain('portta-forward-auth:')
     expect(yaml).not.toContain('$apr1$')

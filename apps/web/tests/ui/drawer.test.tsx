@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
-import { Drawer } from '../../src/ui/components/ui/drawer.tsx'
+import { Drawer } from '@/components/ui/drawer'
 
 describe('the drawer', () => {
   it('opens on the right, names itself, and closes', async () => {

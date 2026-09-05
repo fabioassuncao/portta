@@ -17,7 +17,7 @@ export function loadAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig 
     port: Number(env('PORTTA_AUTH_PORT', '4180')),
     storePath: env('PORTTA_AUTH_STORE', '/app/state/auth/protections.json'),
     secret: env('PORTTA_AUTH_SECRET', ''),
-    uiDir: env('PORTTA_AUTH_UI_DIR', '/app/apps/web/dist/auth'),
+    uiDir: env('PORTTA_AUTH_UI_DIR', '/app/apps/auth/dist/ui'),
     sessionSeconds: Number(env('PORTTA_AUTH_SESSION_SECONDS', '43200')),
     ...overrides,
   }

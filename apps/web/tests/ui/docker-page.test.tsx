@@ -7,7 +7,7 @@ import { CONTAINERS, HOST } from './fixtures.ts'
 const containers = vi.fn()
 const host = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error {},
   api: {
     containers: (...args: unknown[]) => containers(...args),
@@ -25,7 +25,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { DockerPage } = await import('../../src/ui/pages/Docker.tsx')
+const { DockerView: DockerPage } = await import('../../app/(panel)/docker/docker-view.tsx')
 
 beforeEach(() => {
   containers.mockReset().mockResolvedValue({ containers: CONTAINERS, total: CONTAINERS.length })

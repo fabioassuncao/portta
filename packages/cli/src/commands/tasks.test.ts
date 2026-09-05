@@ -3,7 +3,7 @@ import type { Command } from 'commander'
 
 const mocks = vi.hoisted(() => ({ requests: [] as { method: string; url: string; body: unknown; headers: Record<string, string> }[], answer: {} as unknown, tree: undefined as unknown, status: 200 }))
 vi.mock('../context.js', () => ({
-  gatewayContext: () => ({ root: '/tmp/portta', env: { PORTTA_WEB_PORT: '8081', PORTTA_WEB_AUTH_USER: 'dev', PORTTA_PANEL_PASSWORD: 'secret' }, config: {}, composeFiles: [], version: 'test' }),
+  gatewayContext: () => ({ root: '/tmp/portta', env: { PORTTA_WEB_PORT: '8081', PORTTA_TOKEN: 'ptt_secret' }, config: {}, composeFiles: [], version: 'test' }),
 }))
 
 import { tasksComment, tasksCreate, tasksDelete, tasksEdit, tasksFinish, tasksGitHubStatus, tasksLink, tasksList, tasksNext, tasksShow, tasksStart, tasksStatus, tasksSubtaskLink, tasksSync } from './tasks.js'
@@ -36,7 +36,7 @@ describe('portta tasks', () => {
     await tasksList({ project: 'shop', status: 'ready,blocked', open: true }, command({ actor: 'claude-code' }))
     expect(mocks.requests[0]).toMatchObject({ method: 'GET', url: 'http://127.0.0.1:8081/api/projects/shop/tasks?status=ready%2Cblocked&open=true' })
     expect(mocks.requests[0]!.headers['X-Portta-Actor']).toBe('claude-code')
-    expect(mocks.requests[0]!.headers['authorization']).toMatch(/^Basic /)
+    expect(mocks.requests[0]!.headers['authorization']).toBe('Bearer ptt_secret')
     expect(JSON.parse(stdout).tasks).toHaveLength(1)
   })
 

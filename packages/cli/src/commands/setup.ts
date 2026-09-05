@@ -1,4 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { prepareEnvFile } from 'portta-core'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { Command } from 'commander'
@@ -72,16 +73,17 @@ export async function setupCommand(options: SetupOptions, command: Command): Pro
   }
 
   const envFile = join(target, '.env')
-  if (existsSync(envFile)) record('environment', 'skipped', '.env already exists')
-  else { copyFileSync(join(target, '.env.example'), envFile); record('environment', 'created', '.env from .env.example') }
-  for (const directory of ['state', 'state/git', 'state/github', 'state/metrics', 'state/logs', 'config/tls', 'config/traefik/dynamic']) mkdirSync(join(target, directory), { recursive: true })
+  prepareEnvFile(envFile)
+  record('environment', 'updated', 'environment prepared from .env.example')
+  for (const directory of ['state', 'state/auth', 'state/runner', 'state/access', 'state/cloudflared', 'state/git', 'state/github', 'state/metrics', 'state/logs', 'config/tls', 'config/traefik/dynamic']) mkdirSync(join(target, directory), { recursive: true })
+  for (const directory of ['state/auth', 'state/runner', 'state/cloudflared']) chmodSync(join(target, directory), 0o700)
   record('directories', 'ok', 'gateway state directories')
   const context = gatewayContext({ root: target, profile })
   const network = await ensureNetwork(context.config.network)
   record('network', network, `shared network ${context.config.network}`)
   if (options.skipPull) record('images', 'skipped', 'image pull disabled')
   else { await runProcess('docker', ['compose', ...composeArguments(context), 'pull', '--ignore-buildable'], { cwd: target, env: context.env }); record('images', 'ok', 'pinned images pulled') }
-  await runProcess('docker', ['compose', ...composeArguments(context), 'up', '-d'], { cwd: target, env: context.env })
+  await runProcess('docker', ['compose', ...composeArguments(context), 'up', '-d', '--wait', '--wait-timeout', '180'], { cwd: target, env: context.env })
   record('gateway', 'ok', `gateway up on ${profile}`)
   const running = await runProcess('docker', ['compose', ...composeArguments(context), 'ps', '--status', 'running', '--quiet'], { cwd: target, env: context.env })
   if (!running.stdout.trim()) throw new PreconditionError('gateway started but no component remained running', `run portta doctor inside ${target}`)

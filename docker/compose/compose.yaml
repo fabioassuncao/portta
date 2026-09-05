@@ -194,7 +194,7 @@ services:
       PORTTA_AUTH_PORT: "4180"
       PORTTA_AUTH_STORE: /app/state/auth/protections.json
       PORTTA_AUTH_SECRET: ${PORTTA_AUTH_SECRET:-}
-      PORTTA_AUTH_UI_DIR: /app/apps/web/dist/auth
+      PORTTA_AUTH_UI_DIR: /app/apps/auth/dist/ui
       PORTTA_AUTH_SESSION_SECONDS: "43200"
     volumes:
       - ./state/auth:/app/state/auth:ro

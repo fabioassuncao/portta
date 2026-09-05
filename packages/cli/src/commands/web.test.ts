@@ -1,15 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { panelLoopbackApiUrl, renderPanelAuth, webUrl } from './web.js'
-
-describe('panel authentication rendering', () => {
-  it('keeps the legacy panel file free of credentials', () => {
-    const rendered = renderPanelAuth('dev', '$apr1$abcdefgh$hash')
-    expect(rendered).not.toContain('portta-web-auth:')
-    expect(rendered).not.toContain('$apr1$')
-    expect(rendered).toContain('portta-auth.yaml')
-  })
-  it('fails closed by declaring no middleware when unset', () => expect(renderPanelAuth()).not.toMatch(/^http:/m))
-})
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { panelLoopbackApiUrl, requestPanelMigrate, waitForPanelLoopback, webUrl } from './web.js'
 
 type Context = Parameters<typeof webUrl>[0]
 
@@ -47,27 +37,51 @@ describe('where the panel answers', () => {
     expect(webUrl(context({}))).toBe('http://127.0.0.1:8081')
   })
 
-  // In development Vite owns the port and proxies /api to the server beside
-  // it; the server's own port serves no UI, because the dev image builds none.
-  it('is Vite’s port in development, never the server’s', () => {
-    expect(webUrl(context({ webDev: true }))).toBe('http://127.0.0.1:5173')
-  })
-
-  it('honours a configured development port', () => {
-    expect(webUrl(context({ webDev: true }, { PORTTA_WEB_DEV_PORT: '4000' }))).toBe(
-      'http://127.0.0.1:4000',
-    )
+  // The panel is one process and HMR arrives on the port the API answers on.
+  // There used to be a Vite container on 5173 in front of it, and reporting
+  // that port now sends people to a door that is not there.
+  it('is the same port in development', () => {
+    expect(webUrl(context({ webDev: true }))).toBe('http://127.0.0.1:8081')
   })
 
   it('honours the bind address in both modes', () => {
     const env = { PORTTA_WEB_BIND_ADDRESS: '100.64.0.2' }
     expect(webUrl(context({}, env))).toBe('http://100.64.0.2:8081')
-    expect(webUrl(context({ webDev: true }, env))).toBe('http://100.64.0.2:5173')
+    expect(webUrl(context({ webDev: true }, env))).toBe('http://100.64.0.2:8081')
   })
 
   it('is the routed hostname when the panel is exposed over the VPN', () => {
     expect(webUrl(context({ webExpose: 'vpn', tlsEnabled: true }))).toBe(
       'https://portta-web.localhost',
     )
+  })
+})
+
+describe('waiting for the panel before migrate', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('POSTs migrate only after /api/health answers', async () => {
+    const seen: string[] = []
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      seen.push(`${init?.method ?? 'GET'} ${url}`)
+      if (String(url).endsWith('/api/health')) return new Response('{"ok":true}', { status: 200 })
+      if (String(url).endsWith('/api/database/migrate')) {
+        return new Response(JSON.stringify({ applied: [], migrations: ['0000_initial'] }), { status: 200 })
+      }
+      throw new Error(`unexpected ${url}`)
+    })
+
+    await expect(requestPanelMigrate(context({}))).resolves.toEqual({ applied: [], migrations: ['0000_initial'] })
+    expect(seen[0]).toBe('GET http://127.0.0.1:8081/api/health')
+    expect(seen[1]).toBe('POST http://127.0.0.1:8081/api/database/migrate')
+  })
+
+  it('times out instead of hanging when the panel never answers', async () => {
+    vi.stubGlobal('fetch', async () => {
+      throw new Error('ECONNREFUSED')
+    })
+    await expect(waitForPanelLoopback(context({}), 0)).rejects.toThrow(/the panel is not reachable/)
   })
 })

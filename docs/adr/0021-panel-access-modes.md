@@ -1,6 +1,6 @@
 # 0021. Panel access is its own decision, and a public panel gets its own entrypoint
 
-**Status:** Accepted, amended by [0027](0027-forward-authentication-service.md) and by the `domain` mode below (2026-09-02)
+**Status:** Accepted, amended by [0027](0027-forward-authentication-service.md), by the `domain` mode below (2026-09-02), and by [0035](0035-authentication-lives-in-the-panel.md) — every mode but `local` now requires the panel to sign people in, and no mode carries a Traefik middleware
 
 ## Context
 

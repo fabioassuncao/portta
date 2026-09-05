@@ -1,8 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 import { vi } from 'vitest'
 // The primitives name their controls through i18n, so a test that renders one
-// alone still gets English names.
-import '../../src/ui/i18n/index.ts'
+// alone still gets English names. The panel initialises i18next from the locale
+// the server decided; a test has no server, so it says English here.
+import { initI18n } from '@/lib/i18n/client'
+
+initI18n('en')
 
 // jsdom has neither of these, and the panel touches both on mount.
 class FakeEventSource {
@@ -33,6 +36,37 @@ class FakeEventSource {
 }
 
 vi.stubGlobal('EventSource', FakeEventSource)
+
+/**
+ * Next's router, as far as a component test is concerned.
+ *
+ * A page under test navigates, reads the path and reads the query string. None
+ * of those exist outside a Next render, and mocking them per file would be the
+ * same twelve lines in every one. `navigation.push` is exported so a test can
+ * assert where a click went.
+ */
+export const navigation = {
+  push: vi.fn(),
+  replace: vi.fn(),
+  refresh: vi.fn(),
+  back: vi.fn(),
+  pathname: '/',
+  search: '',
+}
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: navigation.push,
+    replace: navigation.replace,
+    refresh: navigation.refresh,
+    back: navigation.back,
+    prefetch: () => undefined,
+  }),
+  usePathname: () => navigation.pathname,
+  useSearchParams: () => new URLSearchParams(navigation.search),
+  redirect: (href: string) => { navigation.push(href) },
+  notFound: () => { throw new Error('notFound') },
+}))
 
 if (!window.matchMedia) {
   vi.stubGlobal(

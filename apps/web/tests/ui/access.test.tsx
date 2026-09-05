@@ -2,13 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
-import type { AccessView } from '../../src/shared/types.ts'
+import type { AccessView } from 'portta-contracts'
 
 const access = vi.fn()
 const openBridge = vi.fn()
 const closeBridge = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error {},
   api: {
     access: () => access(),
@@ -24,7 +24,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { Access } = await import('../../src/ui/pages/Access.tsx')
+const { AccessView: Access } = await import('../../app/(panel)/access/access-view.tsx')
 
 const view: AccessView = {
   bridgeImageHint: 'alpine/socat:1.8.1.3',

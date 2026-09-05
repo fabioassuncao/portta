@@ -3,7 +3,7 @@ import { screen, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
 import { makeTaskSummary } from './fixtures.ts'
-import { TaskBoard, planBoardMove } from '../../src/ui/components/tasks/task-board.tsx'
+import { TaskBoard, planBoardMove } from '@/components/tasks/task-board'
 
 describe('the task board', () => {
   it('puts each task in the column of its status and moves it from the menu', async () => {
@@ -46,6 +46,20 @@ describe('the task board', () => {
 
   it('links every card to its task page', () => {
     renderWithQuery(<TaskBoard slug="produto" tasks={[makeTaskSummary({ id: '5', title: 'Linked' })]} onMove={vi.fn()} />)
-    expect(screen.getByRole('link', { name: 'Linked' })).toHaveAttribute('href', '#/projects/produto/tasks/5')
+    expect(screen.getByRole('link', { name: 'Linked' })).toHaveAttribute('href', '/projects/produto/tasks/5')
+  })
+
+  it('names the project on a global board without growing the card', () => {
+    renderWithQuery(
+      <TaskBoard
+        tasks={[makeTaskSummary({ id: '5', project: 'portta', title: 'Linked' })]}
+        onMove={vi.fn()}
+        showProject
+        projectNames={{ portta: 'Portta' }}
+        from="tasks"
+      />,
+    )
+    expect(screen.getByRole('link', { name: 'Portta' })).toHaveAttribute('href', '/projects/portta')
+    expect(screen.getByRole('link', { name: 'Linked' })).toHaveAttribute('href', '/projects/portta/tasks/5?from=tasks')
   })
 })

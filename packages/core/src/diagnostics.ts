@@ -154,14 +154,12 @@ export function exposureVerdict(profile: string, binds: string, panelIsPublic: b
 export function dashboardExposeRefusal(env: Record<string, string | undefined>): string | null {
   if ((env['PORTTA_DASHBOARD_EXPOSE'] ?? 'local') !== 'domain') return null
   if (!isTrue(env['PORTTA_DASHBOARD'])) return null
-  const domain = env['PORTTA_DOMAIN'] ?? ''
-  if (domain === '' || domain === 'localhost') {
-    return 'a dashboard on the domain needs a domain of its own'
-  }
-  if ((env['PORTTA_WEB_AUTH'] ?? 'none') !== 'basic' || !env['PORTTA_WEB_AUTH_USER'] || !env['PORTTA_WEB_AUTH_HASH']) {
-    return 'a dashboard on the domain needs a panel credential: run portta web auth set'
-  }
-  return null
+  // Its only protection was the panel's BasicAuth, and the panel signs people
+  // in itself now. The dashboard has no credential of its own, it exposes the
+  // routing of every project on the host, and an unprotected one is refused
+  // rather than warned about.
+  // See docs/adr/0035-authentication-lives-in-the-panel.md.
+  return 'the Traefik dashboard can no longer be routed on a domain: it has no credential of its own'
 }
 
 export function dashboardVerdict(enabled: boolean, bindAddress: string, port: string): DoctorCheck {
@@ -177,45 +175,70 @@ export interface PanelFacts {
   expose: string
   bindAddress: string
   port: string
+  /** `disabled` or `required`, as `.env` spells it. */
   authMode: string
-  authUser: string
-  authHash: string
-  middlewareRendered: boolean
+  /** Whether PORTTA_AUTH_SECRET is set. Never the value. */
+  secretPresent: boolean
+  /** A `.env` or a Traefik file still carrying the credential that used to guard the panel. */
+  legacyPanelAuth: boolean
   readOnly: boolean
 }
+
+const LOOPBACK_ONLY = new Set(['local'])
 
 /**
  * What stands in front of the panel.
  *
- * A routed panel can start, stop and remove every container on the host, so
- * this fails rather than warns — the same rule the non-loopback dashboard
- * follows. The tailnet is treated as a boundary in its own right, and a better
- * one than a password.
+ * The answer used to be Traefik: a BasicAuth hash, then a ForwardAuth
+ * middleware. It is now the panel itself, so what this checks is that the two
+ * decisions agree — a panel reachable from another machine must be in
+ * `required` mode, and a panel in `required` mode must have a secret to sign
+ * sessions with.
+ *
+ * It fails rather than warns, for the same reason it always did: a reachable
+ * panel can start, stop and remove every container on the host. The panel's own
+ * process refuses to start in the wrong combination, so a failure here is a
+ * host that will not come up, not a host that is quietly open.
  */
 export function panelAuthVerdicts(panel: PanelFacts): DoctorCheck[] {
   const checks: DoctorCheck[] = []
-  if (panel.expose === 'local') {
-    checks.push(check('web.auth', 'pass', 'panel authentication', `not routed: loopback only on ${panel.bindAddress}:${panel.port}`))
-  } else if (panel.expose === 'tailscale') {
-    const prefix = panel.authMode === 'basic' ? `Portta login as ${panel.authUser}, ` : ''
-    checks.push(check('web.auth', 'pass', 'panel authentication', `${prefix}reachable only on ${panel.bindAddress}:${panel.port}`))
-  } else if (panel.authMode !== 'basic' || !panel.authUser || !panel.authHash) {
+  const required = panel.authMode === 'required'
+  const reachable = !LOOPBACK_ONLY.has(panel.expose) || !isLoopbackAddress(panel.bindAddress)
+
+  if (!reachable) {
+    checks.push(check('web.auth', 'pass', 'panel authentication',
+      required
+        ? `signs people in; loopback only on ${panel.bindAddress}:${panel.port}`
+        : `local operator; loopback only on ${panel.bindAddress}:${panel.port}`))
+  } else if (!required) {
     checks.push(check('web.auth', 'fail', 'panel authentication',
-      `the panel is reachable beyond this host (access: ${panel.expose}) with nothing in front of it`,
-      'portta web auth set'))
+      `the panel is reachable beyond this host (access: ${panel.expose}, bind: ${panel.bindAddress}) and asks nobody who they are`,
+      'portta config set panel.auth required   then portta web up'))
   } else {
-    checks.push(check('web.auth', 'pass', 'panel authentication', `Portta ForwardAuth as ${panel.authUser}`))
-    // A middleware Traefik cannot resolve makes the router fail closed, so a
-    // missing file locks the operator out rather than opening the panel.
-    checks.push(panel.middlewareRendered
-      ? check('web.auth.file', 'pass', 'panel middleware', 'rendered in config/traefik/dynamic')
-      : check('web.auth.file', 'fail', 'panel middleware',
-          'the router names portta-forward-auth@file and no such middleware is rendered',
-          'portta web auth apply'))
+    checks.push(check('web.auth', 'pass', 'panel authentication',
+      `signs people in (access: ${panel.expose})`))
   }
-  if (panel.expose !== 'local' && !panel.readOnly) {
+
+  if (required) {
+    checks.push(panel.secretPresent
+      ? check('web.auth.secret', 'pass', 'panel session secret', 'set')
+      : check('web.auth.secret', 'fail', 'panel session secret',
+          'PORTTA_AUTH_MODE=required with no PORTTA_AUTH_SECRET: the panel refuses to start',
+          'portta web up   (generates it without printing it)'))
+  }
+
+  // An upgraded host can still carry the credential that used to guard the
+  // panel. Nothing reads it any more, and leaving it in place suggests a door
+  // that is still there.
+  if (panel.legacyPanelAuth) {
+    checks.push(check('web.auth.legacy', 'warn', 'panel authentication leftovers',
+      'this host still carries the Traefik credential the panel used before it signed people in',
+      'portta web up   rewrites the generated files and the keys are safe to delete from .env'))
+  }
+
+  if (reachable && !panel.readOnly) {
     checks.push(check('web.readonly', 'warn', 'panel write access',
-      'routed and writable: whoever gets past the credential can stop containers',
+      'reachable and writable: whoever signs in can stop containers',
       'portta web up --read-only'))
   }
   return checks

@@ -16,3 +16,23 @@ export function redactSecrets(text: string, secrets: Array<string | null | undef
   }
   return redacted
 }
+
+/**
+ * A Portta token, wherever it appears.
+ *
+ * `redactSecrets` needs to be told the values. This does not: a `ptt_` token
+ * has a shape, and anything that writes a line somewhere — a log, an error, a
+ * task note — can strip one it was never told about. That is the case that
+ * matters, because a secret nobody knew was there is the one that gets written
+ * down.
+ */
+const TOKEN = /\bptt_[A-Za-z0-9_-]{16,}/g
+
+export function redactTokens(text: string): string {
+  return text.replace(TOKEN, 'ptt_***')
+}
+
+/** Both: the values this process knows, and any Portta token it does not. */
+export function redact(text: string, secrets: Array<string | null | undefined> = []): string {
+  return redactTokens(redactSecrets(text, secrets))
+}

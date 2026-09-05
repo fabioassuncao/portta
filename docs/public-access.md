@@ -1,7 +1,7 @@
 # Public access
 
 Open the gateway's
-[Public access settings](http://127.0.0.1:8081/#/settings/public-access) to edit
+[Project access settings](http://127.0.0.1:8081/settings/general/project-access) to edit
 the managed keys from the panel.
 
 Disabled by default. Turning it on is the most consequential thing the gateway
@@ -80,7 +80,7 @@ Anything routed is public unless its router opts into authentication. Portta
 ships a working ForwardAuth middleware and one credential per protected host:
 
 ```bash
-portta auth protect demo-web.example.com --project demo --service web
+portta protect host demo-web.example.com --project demo --service web
 ```
 
 Then opt a router in:

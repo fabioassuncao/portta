@@ -27,6 +27,11 @@ portta_load_env; portta_defaults
 
 GW="$PORTTA_ROOT/bin/portta"
 ORIGINAL_LOG_LEVEL="$PORTTA_LOG_LEVEL"
+# Remember how apply was configured so the suite leaves the host as it found it.
+# The last assertion turns the key off; without this, a checkout that had
+# PORTTA_APPLY=true would keep the panel asking the operator to set a key they
+# already had.
+ORIGINAL_APPLY="$PORTTA_APPLY"
 # The whole point of the apply is that a *changed* static setting reaches
 # Traefik, so the target has to differ from what this host already has. Writing
 # DEBUG unconditionally made the suite pass or fail on the developer's own .env:
@@ -52,8 +57,8 @@ fi
 
 cleanup() {
   portta_env_set PORTTA_LOG_LEVEL "$ORIGINAL_LOG_LEVEL" >/dev/null 2>&1
-  portta_env_set PORTTA_APPLY false >/dev/null 2>&1
-  PORTTA_APPLY=false "$GW" up local >/dev/null 2>&1
+  portta_env_set PORTTA_APPLY "$ORIGINAL_APPLY" >/dev/null 2>&1
+  PORTTA_APPLY="$ORIGINAL_APPLY" "$GW" up local >/dev/null 2>&1
   ( cd "$PORTTA_ROOT/docker/examples/demo-a" && docker compose \
       -f compose.yaml -f compose.portta.yaml down -v ) >/dev/null 2>&1
 }
@@ -69,7 +74,7 @@ describe "the applier does not exist unless it is asked for"
 portta_env_set PORTTA_APPLY false >/dev/null
 "$GW" up local >/dev/null 2>&1
 
-it "off by default"
+it "does not exist when turned off"
 assert_eq "" "$(portta_gateway_container apply)"
 
 describe "turning it on prepares it, stopped"

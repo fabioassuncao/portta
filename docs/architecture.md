@@ -16,15 +16,33 @@ network.
 |---|---|---|
 | Traefik | `traefik:v3.7.12` | The only process holding 80/443. Routes by hostname. |
 | Docker socket proxy | `tecnativa/docker-socket-proxy:v0.5.0` | Read-only, filtered Docker API for discovery. |
-| Portta auth | `fabioassuncao/portta:local` | ForwardAuth checks, branded login and host-scoped sessions; no published port. |
+| Portta auth | `fabioassuncao/portta:<VERSION>` | ForwardAuth for *project* hostnames and shares: a branded login and host-scoped sessions; no published port. Not the panel's login. |
 | `bin/portta` | — | The operational contract: bootstrap, up/down, doctor, urls, access. |
-| Web panel | `fabioassuncao/portta:local` | Optional. Read-mostly administration UI on loopback. |
-| Panel socket proxy | `tecnativa/docker-socket-proxy:v0.5.0` | Optional. The panel's own filtered Docker API. |
-| Panel PostgreSQL | `postgres:18.6-alpine` | Optional. Durable decisions and identity, never runtime observations. |
+| Web panel | `fabioassuncao/portta:<VERSION>` | Optional. One Node process: Next pages, the Hono API, the event stream and the WebSocket upgrades, on one port. |
+| Panel socket proxy | `tecnativa/docker-socket-proxy:v0.5.0` | With the panel. The panel's own filtered Docker API. |
+| Panel PostgreSQL | `postgres:18.6-alpine` | With the panel, and required by it: accounts, decisions and identity, never runtime observations. |
 
 That is the whole permanent footprint: three small containers, or six with the
 panel enabled. Bridges and toolbox containers are created on demand and removed
 when done.
+
+### The panel is one process
+
+Pages, API, events and WebSockets all answer on one port, from one Node
+process: a session cookie has one origin, and a panel split across two ports
+would need a proxy in front of it to have one. A small HTTP server dispatches
+`/api/*` to Hono, `/ws/*` to the authorised upgrade handler and everything else
+to Next's App Router — see
+[ADR 0036](adr/0036-next-app-router-and-the-custom-server.md).
+
+It signs people in itself. `PORTTA_AUTH_MODE=disabled` answers everybody as the
+local operator and is only allowed on loopback; `required` gives it accounts,
+roles, sessions, `ptt_` tokens and an optional second factor, all in its own
+database ([ADR 0035](adr/0035-authentication-lives-in-the-panel.md),
+[ADR 0038](adr/0038-roles-and-project-access.md),
+[ADR 0039](adr/0039-personal-api-tokens.md)). PostgreSQL is a boot dependency
+rather than a feature: the panel refuses to start without it
+([ADR 0037](adr/0037-drizzle-and-a-required-database.md)).
 
 The code that implements those components is split across workspaces. Local
 facts (Docker, Git, `.env`, host diagnostics and metrics) live in a shared

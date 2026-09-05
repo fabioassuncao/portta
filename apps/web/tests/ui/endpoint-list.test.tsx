@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithQuery } from './render.tsx'
-import { EndpointList } from '../../src/ui/components/entities/endpoint-list.tsx'
+import { EndpointList } from '@/components/entities/endpoint-list'
 
 const urls = [
   { url: 'https://a.public.example', host: 'a.public.example', scope: 'public' as const, scheme: 'https' as const },

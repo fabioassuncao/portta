@@ -16,4 +16,6 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       target: runtime
-    image: ${PORTTA_WEB_IMAGE:-fabioassuncao/portta:local}
+      args:
+        PORTTA_VERSION: ${PORTTA_VERSION:-}
+    image: ${PORTTA_WEB_IMAGE:-fabioassuncao/portta:${PORTTA_VERSION}}

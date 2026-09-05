@@ -1,6 +1,6 @@
 # 0032. The Portta development model
 
-**Status:** Accepted, amended by [0033](0033-tasks-are-local-issues.md); amends [0010](0010-git-collected-on-the-host.md),
+**Status:** Accepted, amended by [0033](0033-tasks-are-local-issues.md) and by [0038](0038-roles-and-project-access.md) — a Project is now also a boundary, with members; amends [0010](0010-git-collected-on-the-host.md),
 [0013](0013-what-the-panel-persists.md), [0018](0018-github-access-lives-in-the-panel.md)
 and [0031](0031-projects-home-and-project.md)
 

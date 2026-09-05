@@ -6,6 +6,7 @@
 .github
 .env
 .env.*
+.env-lock
 !.env.example
 
 state

@@ -4,7 +4,7 @@ import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
 import { makeService } from './fixtures.ts'
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError: class ApiError extends Error {},
   api: {
     openBridge: vi.fn().mockResolvedValue({ ok: true }),
@@ -13,7 +13,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { OpenTestMenu } = await import('../../src/ui/components/entities/open-test-menu.tsx')
+const { OpenTestMenu } = await import('@/components/entities/open-test-menu')
 
 describe('the Open / Test menu', () => {
   it('lists every address by scope, nearest first, and opens one', async () => {

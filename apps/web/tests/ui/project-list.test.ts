@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { ProjectSummary } from '../../src/shared/types.ts'
+import type { ProjectSummary } from 'portta-contracts'
 import {
   DEFAULT_PROJECT_FILTERS,
   defaultProjectOrder,
@@ -8,8 +8,8 @@ import {
   resolveProjectView,
   toListItem,
   toListItems,
-} from '../../src/ui/lib/projects.ts'
-import { affectedBy, availableActions } from '../../src/ui/components/entities/project-actions.tsx'
+} from '@/lib/projects'
+import { affectedBy, availableActions } from '@/components/entities/project-actions'
 import { makePulse } from './fixtures.ts'
 
 function summary(overrides: Partial<ProjectSummary> = {}): ProjectSummary {

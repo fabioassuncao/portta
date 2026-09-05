@@ -7,7 +7,7 @@
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { APPLY_CONTAINER, APPLY_IMAGE, applyCreateArguments, applyRefusal, applySpec, isTrue } from 'portta-core'
+import { APPLY_CONTAINER, applyCreateArguments, applyRefusal, applySpec, isTrue, porttaImages } from 'portta-core'
 import type { GatewayContext } from '../context.js'
 import { runProcess } from '../process.js'
 
@@ -68,19 +68,20 @@ export async function ensureApplier(context: GatewayContext): Promise<ApplierOut
   }
 
   const context_dir = join(context.root, 'docker', 'images', 'apply')
+  const image = porttaImages(context.version).apply
   if (!existsSync(join(context_dir, 'Dockerfile'))) {
     return { action: 'failed', reason: `no applier image source at ${context_dir}` }
   }
-  const present = await runProcess('docker', ['image', 'inspect', APPLY_IMAGE], { reject: false })
+  const present = await runProcess('docker', ['image', 'inspect', image], { reject: false })
   if (present.exitCode !== 0) {
     // Not `-q`: this is a cold build a person is waiting on, and `-q` would
     // suppress the progress that says so. Nothing here reads the image id it
     // would have printed.
-    const built = await runProcess('docker', ['build', '-t', APPLY_IMAGE, context_dir], { reject: false, stdio: 'stream' })
-    if (built.exitCode !== 0) return { action: 'failed', reason: `could not build ${APPLY_IMAGE}` }
+    const built = await runProcess('docker', ['build', '--build-arg', `PORTTA_VERSION=${context.version}`, '-t', image, context_dir], { reject: false, stdio: 'stream' })
+    if (built.exitCode !== 0) return { action: 'failed', reason: `could not build ${image}` }
   }
 
-  const created = await runProcess('docker', applyCreateArguments(context.root, spec), { reject: false })
+  const created = await runProcess('docker', applyCreateArguments(context.root, spec, context.version), { reject: false })
   return created.exitCode === 0
     ? { action: 'created' }
     : { action: 'failed', reason: created.stderr.trim() || 'docker create failed' }

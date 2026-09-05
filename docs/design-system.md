@@ -10,8 +10,8 @@ colour and its keyboard-first interaction. The identity, the tokens and the
 components are Portta's own. `DESIGN.md` at the repository root is the
 machine-readable summary of the same system.
 
-Everything here is implemented in `apps/web/src/ui/index.css` (tokens) and
-`apps/web/src/ui/components/ui/` (primitives). When a value in this page and a
+Everything here is implemented in `apps/web/app/globals.css` (tokens) and
+`apps/web/components/ui/` (primitives). When a value in this page and a
 value in those files disagree, the file is right and this page needs a fix.
 
 ## Principles
@@ -156,12 +156,13 @@ script in `index.html` applies the class before the first render.
 
 ## Components
 
-All in `apps/web/src/ui/components/ui/` unless noted.
+All in `apps/web/components/ui/` unless noted.
 
 - **Button** — variants `primary`, `default` (= `secondary`), `subtle`,
   `ghost`, `outline`, `danger`, `link`; sizes `xs` (24), `sm` (28), `md` (32),
   `icon`, `icon-sm`, `icon-xs`, `icon-md`. `sm` is the working size; `md` is
-  for a page's one main action. Icons inside are sized by the button.
+  for a page's one main action, on every page. Icons inside are sized by the
+  button: never give one a `size-*` of its own.
   `asChild` renders a link with the same styling. `busy` shows a spinner and
   disables.
 - **Badge** — soft tint, no border; `tone`, `size` (`sm` 20px, `md` 24px),
@@ -171,7 +172,11 @@ All in `apps/web/src/ui/components/ui/` unless noted.
 - **Input, Select, Textarea, Checkbox, Label, Field** — one border language
   in four states; `size="sm"` (28px) in toolbars, `md` (32px) in forms;
   `mono` for technical values. `Field` binds a label, a hint and an error to
-  the control and offers `inline` for a settings row.
+  the control and offers `inline` for a settings row. In a toolbar, use the
+  toolbar's own controls: `ToolbarSearch` (`w-64`), `ToolbarSelect` (`w-36`,
+  `width="lg"` = `w-40` for a sentence-long first option) and `ToolbarCheck`
+  (a checkbox with its label at 28px), so a search box is the same search box
+  on every page.
 - **Card** with `CardHeader`, `CardBody`, `CardFooter`, `CardSection` — a
   hairline, no shadow; a 36px header; a section band for grouped rows.
 - **Dialog, Drawer, ConfirmDialog** — share `Scrim`, `ModalHeader` and
@@ -185,16 +190,24 @@ All in `apps/web/src/ui/components/ui/` unless noted.
   and the preferences.
 - **Tabs** — URL-driven, 36px, an accent underline, the same weight whether
   selected or not so nothing shifts. **Segmented** — a lifted segment for a
-  view switch.
+  view switch or a two-way scope filter. With an icon, the label hides below
+  `sm` and the radio keeps its `aria-label`. Icons: `LayoutGrid` (cards),
+  `Columns3` (board), `Table2` (table).
 - **Table, DataTable** — `thClass`/`tdClass`/`trClass` are shared so a plain
   table and the data table cannot drift. Headers are 12px sentence case, rows
-  are dense, hover is a tint, selection is `bg-selection`.
+  are dense, hover is a tint, selection is `bg-selection`. Which columns show
+  and which one sorts is a `useTableArrangement(storageKey)` handle
+  (`components/ui/table-arrangement.tsx`): the page holds it, passes it to
+  the `DataTable` as `arrangement`, and renders `ColumnsMenu` in the toolbar
+  above (or a card's header). A `DataTable` without a handle keeps its own
+  and offers the menu in a band of its own.
 - **Kbd, Shortcut** — keys as keys, in menus, tooltips and the palette.
 - **Timeline, Breadcrumb, Switch, Skeleton** — as their names say.
 - **Shell pieces** (`components/shell-bits.tsx`) — `PageHeader` (breadcrumb,
-  title, description, `meta`, `toolbar`, `actions`), `Toolbar`,
-  `SectionHeader`, `Eyebrow`, `NoValue`, `Callout`, `ErrorBox`, `Empty`,
-  `Loading`, `Skeleton*`, `StatTile`, `KeyValue`.
+  title, description, `meta`, `actions`), `Toolbar`, `ViewToolbar`,
+  `ToolbarSearch`, `ToolbarSelect`, `ToolbarCheck`, `SectionHeader`,
+  `Eyebrow`, `NoValue`, `Callout`, `ErrorBox`, `Empty`, `Loading`,
+  `Skeleton*`, `StatTile`, `KeyValue`.
 - **Host** (`components/host-summary.tsx`) — `HostHeader` (who the machine
   is, and its state), `HostReadings` (every measurement it reports, as one
   strip).
@@ -217,13 +230,39 @@ row above the content. Nav items are links, 28px tall, with the active one
 lifted by `bg-fill-strong`. The main panel is inset from the canvas with a
 hairline, so the content is what the eye lands on.
 
-A page starts with `PageHeader`. Filters and view switchers go in its
-`toolbar` (or right above the list), sized `sm`. Pages do not invent their
-own headers, paddings or section titles. The one exception is the Overview,
-which has no visible title: its subject is the host, so it opens with
-`HostHeader` (`components/host-summary.tsx`) — the machine's name and kind
-where a title would be, its facts under them, the gateway's and the host's
-state beside them — and keeps the route name as a screen-reader-only `h1`.
+A page starts with `PageHeader`, then the row of controls, then the content.
+Two rows, with fixed jobs:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Title + description                        [+ Primary verb] │  PageHeader.actions (md)
+├─────────────────────────────────────────────────────────────┤
+│ [Cards|Table]  [search] [filters…]      [Columns] [badge]   │  ViewToolbar (sm)
+├─────────────────────────────────────────────────────────────┤
+│ Content: cards / board / table                              │
+│   the row above does not move when this changes             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- `PageHeader.actions` is the page verb (create), at `md`. Never a filter,
+  never a view switcher.
+- `ViewToolbar` is every control of the list, in one row, in one place:
+  `Segmented` first when there is a view to switch, then the filters that
+  shape the rows (search first), then what belongs at the right edge in
+  `trailing`: the `ColumnsMenu` while the view is a table, a read-only badge.
+  Switching cards to a table changes what is under the row, never the row.
+  A page with filters and no view switch (Services, Docker, Environments,
+  Tokens, Audit) uses the same row without a switcher. Nested surfaces (a
+  project Tasks tab) use the same row; they do not grow a second header.
+- A table inside a card that is not the page (a Docker group) keeps its
+  column menu in the card's header, beside the card's title.
+
+Pages do not invent their own headers, paddings or section titles. The one
+exception is the Overview, which has no visible title: its subject is the
+host, so it opens with `HostHeader` (`components/host-summary.tsx`) — the
+machine's name and kind where a title would be, its facts under them, the
+gateway's and the host's state beside them — and keeps the route name as a
+screen-reader-only `h1`.
 
 A list is a table (`DataTable`) or a list of rows (`TaskRow`); a board is
 columns of `TaskCard`. A detail is content on the left and properties on the
@@ -256,3 +295,7 @@ right (`PropertyRow`), the way a task page does it.
 - Do keep headers 36px and rows 36px. Don't add a padding step because a
   page "felt tight".
 - Do add a token when you need a colour. Don't write a hex.
+- Do put a view switcher in `ViewToolbar`, first, as `Segmented`. Don't put
+  it in `PageHeader.actions` or roll a pair of buttons.
+- Do keep the toolbar where it is when the view changes. Don't move it into
+  the table card, and don't put a filter beside the page verb.

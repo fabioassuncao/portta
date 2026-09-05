@@ -3,7 +3,7 @@
 // needs no Docker daemon and describes a known host every time.
 
 import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { makeBridge } from './container.mjs'
@@ -159,32 +159,127 @@ const docker = createServer((req, res) => {
   return json(res, { message: `unexpected call: ${req.method} ${path}` }, 500)
 })
 
+// PostgreSQL is a boot dependency of the panel: it exits rather than serving
+// without one. The Docker *Engine API* the panel talks to is still the fake
+// above — this is a real container for a real database, and the only reason the
+// panel end-to-end run now needs a daemon.
+// A fixed name, so the `docker rm -f` below always clears the one a killed run
+// left behind. A name with the pid in it would leave a container holding the
+// port and no way to find it.
+const DB_NAME = 'portta-e2e-db'
+const DB_PORT = Number(process.env.PORTTA_E2E_DB_PORT ?? 9913)
+// One container, one database per harness. Two harnesses run at once — the open
+// panel and the protected one — and an owner created in one must not be an owner
+// in the other, so they share the server and not the rows.
+const DB_DATABASE = process.env.PORTTA_E2E_DATABASE_NAME ?? 'portta'
+const DATABASE_URL = process.env.PORTTA_E2E_DATABASE_URL ?? `postgres://portta:portta@127.0.0.1:${DB_PORT}/${DB_DATABASE}`
+
+function run(command, args) {
+  return spawnSync(command, args, { encoding: 'utf8' })
+}
+
+function pause(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+function ready() {
+  return run('docker', ['exec', DB_NAME, 'pg_isready', '-U', 'portta']).status === 0
+}
+
+function startDatabase() {
+  if (process.env.PORTTA_E2E_DATABASE_URL) return () => undefined
+
+  if (run('docker', ['info']).status !== 0) {
+    process.stderr.write(
+      'the panel end-to-end run needs a PostgreSQL, and PostgreSQL is a boot dependency of the panel.\n' +
+        'Start Docker, or point PORTTA_E2E_DATABASE_URL at a database you already have.\n',
+    )
+    process.exit(1)
+  }
+
+  // Reuse a running one rather than replacing it: the other harness may have
+  // started it a moment ago, and removing it under them would be a flake nobody
+  // could reproduce. `docker run` losing the name race is the same situation.
+  const existing = run('docker', ['inspect', '-f', '{{.State.Running}}', DB_NAME]).stdout.trim() === 'true'
+  let ours = false
+  if (!existing) {
+    const started = run('docker', [
+      'run', '--rm', '-d', '--name', DB_NAME,
+      '-e', 'POSTGRES_USER=portta', '-e', 'POSTGRES_PASSWORD=portta', '-e', 'POSTGRES_DB=portta',
+      '-p', `127.0.0.1:${DB_PORT}:5432`,
+      'postgres:18.6-alpine',
+    ])
+    ours = started.status === 0
+    if (!ours && !started.stderr.includes('already in use')) {
+      process.stderr.write(`could not start the end-to-end database: ${started.stderr}\n`)
+      process.exit(1)
+    }
+  }
+
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (ready()) {
+      if (DB_DATABASE !== 'portta') {
+        // Dropped and recreated, because the flow this database is for happens
+        // once in a panel's life: creating the owner. A run that inherited the
+        // previous run's owner would be testing a different panel.
+        run('docker', ['exec', DB_NAME, 'dropdb', '-U', 'portta', '--if-exists', '--force', DB_DATABASE])
+        run('docker', ['exec', DB_NAME, 'createdb', '-U', 'portta', DB_DATABASE])
+      }
+      process.stdout.write(`end-to-end database ${DB_DATABASE} on 127.0.0.1:${DB_PORT}\n`)
+      // Only whoever started it removes it, and only once nothing else is
+      // pointing at it: the last harness out closes the door.
+      return () => { if (ours) run('docker', ['rm', '-f', DB_NAME]) }
+    }
+    pause(500)
+  }
+  if (ours) run('docker', ['rm', '-f', DB_NAME])
+  process.stderr.write('the end-to-end database never became ready\n')
+  process.exit(1)
+}
+
+const stopDatabase = startDatabase()
+
 docker.listen(DOCKER_PORT, '127.0.0.1', () => {
   process.stdout.write(`fake docker api on 127.0.0.1:${DOCKER_PORT}\n`)
 
-  const panel = spawn(process.execPath, [join(root, 'dist/server/index.js')], {
+  const panel = spawn(process.execPath, [join(root, 'dist/server.mjs')], {
     cwd: root,
     stdio: 'inherit',
     env: {
       ...process.env,
+      NODE_ENV: 'production',
       PORTTA_RUNTIME_DOCKER_API: `http://127.0.0.1:${DOCKER_PORT}`,
+      PORTTA_RUNTIME_DB_MODE: 'external',
+      PORTTA_RUNTIME_DATABASE_URL: DATABASE_URL,
       PORTTA_RUNTIME_HOST: '127.0.0.1',
       PORTTA_RUNTIME_PORT: String(PANEL_PORT),
       PORTTA_RUNTIME_ENV_FILE: join(root, 'e2e/env.fixture'),
-      PORTTA_RUNTIME_VERSION_FILE: join(root, 'e2e/VERSION.fixture'),
+      PORTTA_RUNTIME_VERSION_FILE: join(root, '..', '..', 'VERSION'),
       PORTTA_RUNTIME_BRIDGE_SETTLE_MS: '0',
       PORTTA_PROFILE: 'local',
       PORTTA_DOMAIN: 'localhost',
       PORTTA_NETWORK: 'portta',
+      // Open unless the run says otherwise. The protected harness is a second
+      // panel on its own port, so both flows are exercised in one run.
+      PORTTA_AUTH_MODE: process.env.PORTTA_E2E_AUTH_MODE ?? 'disabled',
+      PORTTA_AUTH_SECRET: 'an-end-to-end-secret-long-enough-to-sign',
+      PORTTA_PANEL_URL: `http://127.0.0.1:${PANEL_PORT}`,
+      // Every test signs in from 127.0.0.1, so the whole run is one address —
+      // the case the setting exists for, in its most extreme form.
+      PORTTA_AUTH_SIGNIN_ATTEMPTS: '50',
     },
   })
 
   const shutdown = () => {
     panel.kill('SIGTERM')
     docker.close()
+    stopDatabase()
     process.exit(0)
   }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
-  panel.on('exit', (code) => process.exit(code ?? 0))
+  panel.on('exit', (code) => {
+    stopDatabase()
+    process.exit(code ?? 0)
+  })
 })

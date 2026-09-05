@@ -20,7 +20,7 @@ const metricsCurrent = vi.fn()
 const metricsHistory = vi.fn()
 const environments = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError,
   api: {
     developmentOverview: () => developmentOverview(),
@@ -31,7 +31,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { Overview } = await import('../../src/ui/pages/Overview.tsx')
+const { OverviewView: Overview } = await import('@/components/overview/overview-view')
 
 beforeEach(() => {
   developmentOverview.mockReset().mockResolvedValue(makeOverview())
@@ -52,7 +52,7 @@ describe('the development dashboard', () => {
 
   it('says what needs attention and links to it', async () => {
     renderWithQuery(<Overview />)
-    expect(await screen.findByRole('link', { name: 'produto/worker is unhealthy' })).toHaveAttribute('href', '#/environments/produto?service=worker')
+    expect(await screen.findByRole('link', { name: 'produto/worker is unhealthy' })).toHaveAttribute('href', '/environments/produto?service=worker')
   })
 
   it('summarises each project and the code that moved', async () => {
@@ -67,7 +67,7 @@ describe('the development dashboard', () => {
   it('lists who is using the host', async () => {
     renderWithQuery(<Overview />)
     expect(await screen.findByText('Using this host')).toBeInTheDocument()
-    for (const link of screen.getAllByRole('link', { name: 'Meu Produto' })) expect(link).toHaveAttribute('href', '#/projects/produto')
+    for (const link of screen.getAllByRole('link', { name: 'Meu Produto' })) expect(link).toHaveAttribute('href', '/projects/produto')
   })
 
   it('opens with the host rather than a page title', async () => {

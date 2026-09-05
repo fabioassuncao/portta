@@ -14,9 +14,8 @@
 // and tests/unit/runner.test.sh runs both and compares the `docker create`
 // argument lists.
 
-import { APPLY_IMAGE } from './apply.ts'
+import { porttaImages } from './images.ts'
 
-export const RUNNER_IMAGE = APPLY_IMAGE
 export const RUNNER_CONTAINER = 'portta-runner'
 export const RUNNER_COMPONENT = 'runner'
 export const RUNNER_REQUEST_RELATIVE = 'state/runner/request.json'
@@ -121,7 +120,7 @@ export function assertRunnerPath(value: string, what: string): string {
   return value
 }
 
-export function runnerCreateArguments(root: string, spec: string): string[] {
+export function runnerCreateArguments(root: string, spec: string, version: string): string[] {
   return [
     'create',
     '--name', RUNNER_CONTAINER,
@@ -142,13 +141,13 @@ export function runnerCreateArguments(root: string, spec: string): string[] {
     // The host filesystem, so the runner can read a project's Compose files
     // at the path Docker recorded. --project-directory stays the host path.
     '--volume', '/:/host',
-    RUNNER_IMAGE,
+    porttaImages(version).apply,
     'bash', `${root}/scripts/lib/runner-exec.sh`,
   ]
 }
 
 export function runnerSpec(root: string, version: string): string {
-  return `${RUNNER_IMAGE}|${root}|${version}`
+  return `${porttaImages(version).apply}|${root}|${version}`
 }
 
 /**

@@ -5,7 +5,7 @@
 # it needs (curl, jq, dig, openssl, socat, psql, redis-cli, ssh) lives in one
 # small image built from docker/images/toolbox/Dockerfile.
 
-PORTTA_TOOLBOX_IMAGE="fabioassuncao/portta-toolbox:0.1.0"
+PORTTA_TOOLBOX_IMAGE="fabioassuncao/portta-toolbox:$(portta_version)"
 PORTTA_TOOLBOX_CONTEXT="$PORTTA_ROOT/docker/images/toolbox"
 
 portta_toolbox_exists() {
@@ -16,7 +16,7 @@ portta_toolbox_exists() {
 portta_toolbox_ensure() {
   portta_toolbox_exists && return 0
   [ "${1:-}" = "--quiet" ] || info "building the toolbox image (first use only)"
-  docker build -q -t "$PORTTA_TOOLBOX_IMAGE" "$PORTTA_TOOLBOX_CONTEXT" >/dev/null || {
+  docker build -q --build-arg "PORTTA_VERSION=$(portta_version)" -t "$PORTTA_TOOLBOX_IMAGE" "$PORTTA_TOOLBOX_CONTEXT" >/dev/null || {
     err "could not build the toolbox image"
     hint "docker build -t $PORTTA_TOOLBOX_IMAGE docker/images/toolbox/"
     return 1

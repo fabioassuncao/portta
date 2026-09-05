@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
-import { LogViewer } from '../../src/ui/components/logs.tsx'
-import type { LogsResponse, ProjectLogsResponse, ProjectLogSource } from '../../src/shared/types.ts'
+import { LogViewer } from '@/components/logs'
+import type { LogsResponse, ProjectLogsResponse, ProjectLogSource } from 'portta-contracts'
 
 const response: LogsResponse = {
   containerId: 'c1',

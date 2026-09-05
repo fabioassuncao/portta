@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
-import { ToastProvider, useToast } from '../../src/ui/components/ui/toast.tsx'
+import { ToastProvider, useToast } from '@/components/ui/toast'
 
 function Trigger() {
   const toast = useToast()

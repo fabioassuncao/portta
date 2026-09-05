@@ -23,7 +23,7 @@
 # and compares the resulting `docker create` argument lists, so the two cannot
 # drift without a test failing. See docs/adr/0029-shell-only-for-bootstrap.md.
 
-PORTTA_APPLY_IMAGE="fabioassuncao/portta-apply:0.2.0"
+PORTTA_APPLY_IMAGE="fabioassuncao/portta-apply:$(portta_version)"
 PORTTA_APPLY_CONTAINER="portta-apply"
 PORTTA_APPLY_CONTEXT="$PORTTA_ROOT/docker/images/apply"
 
@@ -35,7 +35,7 @@ portta_apply_image_exists() {
 portta_apply_image_ensure() {
   portta_apply_image_exists && return 0
   info "building the applier image (first use only)"
-  docker build -q -t "$PORTTA_APPLY_IMAGE" "$PORTTA_APPLY_CONTEXT" >/dev/null || {
+  docker build -q --build-arg "PORTTA_VERSION=$(portta_version)" -t "$PORTTA_APPLY_IMAGE" "$PORTTA_APPLY_CONTEXT" >/dev/null || {
     err "could not build the applier image"
     hint "docker build -t $PORTTA_APPLY_IMAGE docker/images/apply/"
     return 1

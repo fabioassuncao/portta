@@ -92,7 +92,7 @@ if [ "$RUN_LINT" = "1" ]; then
   bold "== no pinned-to-latest images =="
   # A floating tag turns an unrelated upstream release into an outage.
   floating=$(grep -rnE '^\s*image:\s*\S+(:latest)?\s*$' docker/compose/compose.yaml docker/compose/*/*.yaml docker/examples/*/compose*.yaml \
-    | grep -vE 'image:\s*\S+:[A-Za-z0-9]' || true)
+    | grep -vE 'image:\s*\S+:[A-Za-z0-9]|\$\{PORTTA_VERSION\}' || true)
   if [ -n "$floating" ]; then
     echo "  FAIL images without an explicit tag:"; printf '%s\n' "$floating" | sed 's/^/       /'; FAILED=1
   else
@@ -139,9 +139,10 @@ if [ "$RUN_UNIT" = "1" ]; then
     bold "== node workspaces =="
     echo "  skip node_modules missing (run: npm ci)"
   else
-    # packages/core is first because the other three import it: a failure there
-    # explains failures everywhere else.
-    for workspace in packages/core packages/cli apps/auth apps/web; do
+    # Dependency order, so a failure is reported by the package that caused it
+    # rather than by everything downstream: core is imported by all of them,
+    # contracts and db by the server, the server by the panel.
+    for workspace in packages/core packages/contracts packages/db packages/auth packages/cli apps/auth packages/server apps/web; do
       [ -d "$workspace" ] || continue
       bold "== $workspace =="
       if ( cd "$workspace" && npm run --silent test ); then
@@ -162,14 +163,14 @@ if [ "$RUN_UNIT" = "1" ]; then
       echo "  FAIL typecheck"; FAILED=1
     fi
 
-    # `apps/web/openapi.json` is committed so an API change is visible in
-    # review, and it drifts silently the moment nothing regenerates it. Half a
-    # second, and the last release shipped with it already out of date.
+    # `packages/contracts/openapi.json` is committed so an API change is visible
+    # in review, and it drifts silently the moment nothing regenerates it. Half
+    # a second, and the last release shipped with it already out of date.
     bold "== openapi contract =="
-    if ( cd apps/web && npm run --silent openapi:check >/dev/null ); then
+    if ( cd packages/contracts && npm run --silent openapi:check >/dev/null ); then
       echo "  ok  openapi.json matches the routes"
     else
-      echo "  FAIL openapi.json is stale (run: npm run openapi --workspace=portta-web)"; FAILED=1
+      echo "  FAIL openapi.json is stale (run: npm run openapi --workspace=portta-contracts)"; FAILED=1
     fi
   fi
 fi

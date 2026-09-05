@@ -102,11 +102,30 @@ services:
     depends_on:
       web-socket-proxy:
         condition: service_healthy
+    # `node` is in both the runtime and the `dev` image; the Dockerfile's
+    # `wget` healthcheck only exists on the runtime stage. start_period covers
+    # the first `next.prepare()`; retries then fit `--wait-timeout 180`.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/api/health').then((r)=>process.exit(r.ok||r.status===401?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 60s
     # Whoever owns .env, which the Settings page writes. `bootstrap` and
     # `web up` record it; the image's own `node` is only a last resort, and is
     # right just when the host uid happens to be 1000.
     user: ${PORTTA_WEB_USER:-node}
     environment:
+      PORTTA_RUNTIME_DB_MODE: ${PORTTA_RUNTIME_DB_MODE:-managed}
+      PORTTA_RUNTIME_DB_NAME: ${PORTTA_RUNTIME_DB_NAME:-portta}
+      PORTTA_RUNTIME_DB_USER: ${PORTTA_RUNTIME_DB_USER:-portta}
+      PORTTA_RUNTIME_DB_PASSWORD: ${PORTTA_RUNTIME_DB_PASSWORD:-}
+      PORTTA_RUNTIME_DATABASE_URL: ${PORTTA_RUNTIME_DATABASE_URL:-}
+      PORTTA_AUTH_SIGNIN_ATTEMPTS: ${PORTTA_AUTH_SIGNIN_ATTEMPTS:-}
+      ACME_CHALLENGE: ${ACME_CHALLENGE:-dns}
+      ACME_DNS_RESOLVERS: ${ACME_DNS_RESOLVERS:-}
+      CLOUDFLARE_TUNNEL_ENABLED: ${CLOUDFLARE_TUNNEL_ENABLED:-false}
+      CLOUDFLARE_TUNNEL_ZONE: ${CLOUDFLARE_TUNNEL_ZONE:-}
       PORTTA_RUNTIME_DOCKER_API: http://web-socket-proxy:2375
       PORTTA_RUNTIME_HOST: 0.0.0.0
       PORTTA_RUNTIME_PORT: "8081"
@@ -157,12 +176,22 @@ services:
       PORTTA_WEB_PORT: ${PORTTA_WEB_PORT:-8081}
       PORTTA_WEB_BIND_ADDRESS: ${PORTTA_WEB_BIND_ADDRESS:-127.0.0.1}
       PORTTA_WEB_EXPOSE: ${PORTTA_WEB_EXPOSE:-local}
-      # The panel's own front door. The hash is never returned by the API, and
-      # the middleware it belongs to lives in a generated file, not in a label:
-      # a `$` in a Compose label is an interpolation accident waiting to happen.
-      PORTTA_WEB_AUTH: ${PORTTA_WEB_AUTH:-none}
-      PORTTA_WEB_AUTH_USER: ${PORTTA_WEB_AUTH_USER:-}
-      PORTTA_WEB_AUTH_HASH: ${PORTTA_WEB_AUTH_HASH:-}
+      # The panel's own front door, which is now the panel's own business.
+      #
+      # `required` makes it sign people in: accounts, roles, sessions and
+      # tokens, all in its database. `disabled` makes every request the local
+      # operator, and the process refuses to start that way on anything but
+      # loopback. The secret signs sessions and is shared with the ForwardAuth
+      # service, which is the only other thing here that signs anything.
+      #
+      # PORTTA_PANEL_URL is where a browser reaches it, and three things come
+      # from it: whether the session cookie may be `Secure`, which origins a
+      # write is accepted from, and the address the panel prints. Empty means
+      # loopback on the published port.
+      PORTTA_AUTH_MODE: ${PORTTA_AUTH_MODE:-disabled}
+      PORTTA_AUTH_SECRET: ${PORTTA_AUTH_SECRET:-}
+      PORTTA_PANEL_URL: ${PORTTA_PANEL_URL:-}
+      PORTTA_PANEL_TRUSTED_ORIGINS: ${PORTTA_PANEL_TRUSTED_ORIGINS:-}
       PORTTA_RUNTIME_DYNAMIC_DIR: /app/state/traefik-dynamic
       PORTTA_RUNTIME_AUTH_STORE: /app/state/auth/protections.json
       PORTTA_RUNTIME_RUNNER_DIR: /app/state/runner
@@ -215,6 +244,8 @@ services:
       #                    and refuses every other path in its own process.
       #                    See docs/adr/0011-panel-reads-traefik-writes-one-file.md.
       - ./.env:/app/state/.env
+      - ./.env.example:/app/state/.env.example:ro
+      - ./.env-lock:/app/state/.env-lock
       - ./VERSION:/app/state/VERSION:ro
       - ./state/git:/app/state/git:ro
       - ./state/metrics:/app/state/metrics:ro
@@ -237,10 +268,11 @@ services:
       - webcontrol
     # Deliberately no `ports:` here. Exactly one overlay decides how the panel
     # is reached, so the two ways can never both bind the same host port:
-    #   docker/compose/features/web-bind.yaml    publishes it on PORTTA_WEB_BIND_ADDRESS
+    #   docker/compose/features/web-bind.yaml     publishes it on PORTTA_WEB_BIND_ADDRESS
     #   docker/compose/features/panel-public.yaml routes it through Traefik's
-    #                                             own `panel` entrypoint, behind
-      #                                             ForwardAuth
+    #                                             own `panel` entrypoint
+    #   docker/compose/features/panel-domain.yaml routes it on one hostname of
+    #                                             the gateway's own domain
     labels:
       # Off unless docker/compose/features/web-vpn.yaml turns it on: the panel is
       # never routed through the public entrypoints by accident.

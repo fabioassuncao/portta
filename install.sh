@@ -126,93 +126,16 @@ confirm_default_yes() {
 }
 
 # ---------------------------------------------------------------------------
-# Secrets
+# Environment access
 # ---------------------------------------------------------------------------
-
-random_hex() { # random_hex <bytes>
-  LC_ALL=C od -An -N "${1:-32}" -tx1 /dev/urandom | tr -d ' \n'
-}
-
-# A password a human has to retype once, so: no ambiguous characters, and
-# grouped. 20 characters out of an unbiased alphabet of 32 is ~100 bits.
-random_password() {
-  local raw alphabet="23456789abcdefghijkmnpqrstuvwxyz" out="" i byte
-  raw=$(LC_ALL=C od -An -N 20 -tu1 /dev/urandom | tr -s ' ' '\n' | grep -v '^$')
-  i=0
-  for byte in $raw; do
-    # 256 is a multiple of 32, so the modulo is uniform.
-    out="$out${alphabet:$((byte % 32)):1}"
-    i=$((i + 1))
-    if [ $((i % 5)) -eq 0 ] && [ "$i" -lt 20 ]; then out="$out-"; fi
-  done
-  printf '%s' "$out"
-}
-
-# A legacy apr1 hash for the upgrade handoff. The lifecycle migrator lifts it
-# into the private protection store before the routed panel is exposed.
-hash_password() { # hash_password <password>
-  local password="$1" hashed=""
-  if have openssl; then
-    hashed=$(printf '%s\n' "$password" | openssl passwd -apr1 -stdin 2>/dev/null || true)
-  fi
-  if [ -z "$hashed" ] && have docker; then
-    hashed=$(docker run --rm --entrypoint htpasswd httpd:2.4-alpine -nbB portta "$password" 2>/dev/null \
-      | cut -d: -f2- || true)
-  fi
-  [ -n "$hashed" ] || die "cannot hash the panel password: install openssl, or run the installer where Docker can pull httpd:2.4-alpine"
-  printf '%s' "$hashed"
-}
-
-# ---------------------------------------------------------------------------
-# .env editing
-# ---------------------------------------------------------------------------
-# Same contract as portta_env_set in scripts/lib/common.sh: rewrite the line in
-# place when the key exists, append otherwise, and never truncate the file if
-# the run is interrupted.
-
-env_get() { # env_get <file> <key>
-  local raw
+# Existing installs ship their reader. A fresh install has no file to read;
+# all writes happen after the current runtime adapter has been downloaded.
+env_get() {
   [ -f "$1" ] || return 0
-  raw=$(sed -n "s/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$2=//p" "$1" | tail -n1)
-  case "$raw" in
-    \"*\") raw=${raw#\"}; raw=${raw%\"} ;;
-    "'"*"'") raw=${raw#\'}; raw=${raw%\'} ;;
-  esac
-  printf '%s' "$raw"
+  [ -f "$PORTTA_HOME/scripts/lib/env.sh" ] || die "the installation environment adapter is missing"
+  ( . "$PORTTA_HOME/scripts/lib/env.sh"; portta_env_get "$1" "$2" )
 }
-
-env_set() { # env_set <file> <key> <value>
-  local file="$1" key="$2" value="$3" tmp
-  case "$key" in ''|*[!A-Za-z0-9_]*) die "refusing to write invalid .env key: $key" ;; esac
-  # An apr1 hash is `$apr1$salt$digest`. Compose expands `$name` inside a
-  # dotenv value, and a shell would too, so quote anything containing one.
-  # Every reader here strips one layer of matching quotes.
-  case "$value" in
-    *\$*)
-      case "$value" in
-        *"'"*) die "refusing to write a value containing a single quote: $key" ;;
-      esac
-      value="'$value'"
-      ;;
-  esac
-  if [ ! -f "$file" ]; then
-    printf '%s=%s\n' "$key" "$value" > "$file"
-    chmod 600 "$file"
-    return 0
-  fi
-  tmp="$file.portta-tmp.$$"
-  if grep -q "^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$key=" "$file"; then
-    awk -v k="$key" -v v="$value" '
-      $0 ~ "^[[:space:]]*(export[[:space:]]+)?" k "=" { print k "=" v; next }
-      { print }
-    ' "$file" > "$tmp"
-  else
-    cp "$file" "$tmp"
-    printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  fi
-  chmod 600 "$tmp"
-  mv "$tmp" "$file"
-}
+env_set() { portta_env_set "$2" "$3" "$1"; }
 
 # ---------------------------------------------------------------------------
 # Arguments
@@ -222,7 +145,7 @@ INSTALL_DIR=""
 PROJECTS_HOME=""
 PANEL_ACCESS=""
 PANEL_PORT=""
-PANEL_USER=""
+PANEL_AUTH=""
 DOMAIN=""
 DOMAIN_MODE=""
 TLS_EMAIL=""
@@ -250,7 +173,10 @@ OPTIONS
                           hostname of --domain over HTTPS, behind the same
                           login page a protected project gets; it needs --tls
   --panel-port <port>     Host port for the panel            (default: 8081)
-  --panel-user <name>     Panel username                     (default: admin)
+  --panel-auth <mode>     required | disabled. `required` makes the panel sign
+                          people in; `disabled` makes every request the local
+                          operator and is only allowed on loopback
+                          (default: required, except --panel-access local)
   --domain <domain>       Base domain for routed services    (optional)
   --domain-mode <mode>    Project hostnames: local | auto | custom
                           (default: auto on a server, local otherwise)
@@ -269,15 +195,13 @@ OPTIONS
   --non-interactive       Never prompt; every unset value takes its default
   -h, --help              This text
 
-The panel password is never taken from the command line, where it would be
-visible in the shell history and in the process list. Set PORTTA_PANEL_PASSWORD
-in the environment to choose one, or let the installer generate a strong one
-and print it once.
+There is no panel password here any more. The panel signs people in itself, and
+the first account is created once, in a browser at /setup or from this host with
+`portta auth bootstrap`. The installer prints the address at the end.
 
 ENVIRONMENT
   PORTTA_HOME              same as --install-dir
   PORTTA_PROJECTS_HOME     same as --projects-home
-  PORTTA_PANEL_PASSWORD    the panel password, read once and never echoed
   PORTTA_REF               same as --version
   PORTTA_REGISTRY          same as --registry
 USAGE
@@ -293,8 +217,13 @@ while [ $# -gt 0 ]; do
     --panel-access=*) PANEL_ACCESS="${1#*=}" ;;
     --panel-port) shift; PANEL_PORT="${1:-}" ;;
     --panel-port=*) PANEL_PORT="${1#*=}" ;;
-    --panel-user) shift; PANEL_USER="${1:-}" ;;
-    --panel-user=*) PANEL_USER="${1#*=}" ;;
+    --panel-auth) shift; PANEL_AUTH="${1:-}" ;;
+    --panel-auth=*) PANEL_AUTH="${1#*=}" ;;
+    # Gone with the Traefik credential: the panel's first account is created at
+    # /setup. Refused rather than ignored, so a script that still passes one is
+    # told instead of quietly installing something else.
+    --panel-user|--panel-user=*)
+      die "--panel-user is gone: the panel signs people in itself, and the first account is created at /setup (or with 'portta auth bootstrap')" ;;
     --domain) shift; DOMAIN="${1:-}" ;;
     --domain=*) DOMAIN="${1#*=}" ;;
     --domain-mode) shift; DOMAIN_MODE="${1:-}" ;;
@@ -327,8 +256,9 @@ esac
 case "$PANEL_PORT" in
   ''|*[!0-9]*) [ -z "$PANEL_PORT" ] || die "--panel-port must be a number" ;;
 esac
-case "$PANEL_USER" in
-  ''|*[!A-Za-z0-9._-]*) [ -z "$PANEL_USER" ] || die "--panel-user may only contain letters, digits, dot, underscore and dash" ;;
+case "$PANEL_AUTH" in
+  ''|required|disabled) ;;
+  *) die "--panel-auth must be required or disabled (got: $PANEL_AUTH)" ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -757,63 +687,57 @@ case "$PANEL_ACCESS" in
 esac
 
 # ---------------------------------------------------------------------------
-# 6. Panel credential
+# 6. Panel authentication
 # ---------------------------------------------------------------------------
-# Required whenever the panel can be reached from another machine without a
-# network boundary already in the way. `public` is exactly that case.
+# The panel signs people in itself: accounts, roles, sessions and tokens, in its
+# own database. There is no credential to invent here and nothing to hand over
+# — the first account is created once, at /setup, by whoever opens the panel
+# first. See docs/adr/0035-authentication-lives-in-the-panel.md.
+#
+# What the installer decides is only whether it asks at all. `disabled` makes
+# every request the local operator, which is safe on loopback (reaching it
+# already means having the machine) and an open control plane anywhere else, so
+# the panel's own process refuses that combination at boot.
 
-PANEL_PASSWORD=""
-PANEL_PASSWORD_GENERATED=false
-PANEL_AUTH_MODE="none"
-EXISTING_AUTH_USER=$(env_get "$ENV_FILE" PORTTA_WEB_AUTH_USER)
-EXISTING_AUTH_HASH=$(env_get "$ENV_FILE" PORTTA_WEB_AUTH_HASH)
+EXISTING_AUTH_MODE=$(env_get "$ENV_FILE" PORTTA_AUTH_MODE)
 
-# The two modes that put the panel beyond this host without a network boundary
-# already in the way. `local` and `tailscale` have one.
-# Every mode that puts the panel beyond this host. `domain` was missing here
-# when the mode was added, so a fresh install with it created no credential at
-# all -- and `domain` is refused without one, leaving a host that installed
-# cleanly and could not start its own panel.
+# Every mode that puts the panel beyond this host. `domain` was missing from
+# the old list when the mode was added, so a fresh install with it created no
+# credential at all -- and `domain` was refused without one, leaving a host that
+# installed cleanly and could not start its own panel.
 needs_auth() {
   case "$PANEL_ACCESS" in
-    public|vpn|domain) return 0 ;;
+    public|vpn|domain|tailscale) return 0 ;;
     *) return 1 ;;
   esac
 }
 
+step "Panel authentication"
 if needs_auth; then
-  step "Panel authentication"
-  if [ -n "$EXISTING_AUTH_HASH" ] && [ -z "$PANEL_USER" ] && [ -z "${PORTTA_PANEL_PASSWORD:-}" ]; then
-    PANEL_AUTH_MODE="basic"
-    PANEL_USER="$EXISTING_AUTH_USER"
-    good "keeping the existing credential for user '$PANEL_USER'"
-    note "portta web auth set replaces it and shows the new password once"
-  else
-    [ -n "$PANEL_USER" ] || PANEL_USER=$(ask "panel user" "${EXISTING_AUTH_USER:-admin}")
-    [ -n "$PANEL_USER" ] || PANEL_USER="admin"
-    case "$PANEL_USER" in
-      *[!A-Za-z0-9._-]*) die "invalid panel user: $PANEL_USER" ;;
-    esac
-    if [ -n "${PORTTA_PANEL_PASSWORD:-}" ]; then
-      PANEL_PASSWORD="$PORTTA_PANEL_PASSWORD"
-      good "using the password from PORTTA_PANEL_PASSWORD"
-    else
-      PANEL_PASSWORD=$(ask_secret "panel password (empty to generate a strong one)")
-    fi
-    if [ -z "$PANEL_PASSWORD" ]; then
-      PANEL_PASSWORD=$(random_password)
-      PANEL_PASSWORD_GENERATED=true
-      good "generated a strong password; it is printed once at the end"
-    else
-      good "using the password you supplied"
-    fi
-    PANEL_AUTH_MODE="basic"
+  # Not a question on these: the panel refuses to start any other way.
+  if [ -n "$PANEL_AUTH" ] && [ "$PANEL_AUTH" != "required" ]; then
+    die "--panel-auth disabled cannot be combined with --panel-access $PANEL_ACCESS: the panel would be reachable from another machine with nobody signing in"
   fi
-elif [ -n "$EXISTING_AUTH_HASH" ]; then
-  # Moving from public to local does not throw the credential away.
-  PANEL_AUTH_MODE=$(env_get "$ENV_FILE" PORTTA_WEB_AUTH)
-  [ -n "$PANEL_AUTH_MODE" ] || PANEL_AUTH_MODE="basic"
-  PANEL_USER="$EXISTING_AUTH_USER"
+  PANEL_AUTH="required"
+  good "the panel will sign people in (access: $PANEL_ACCESS)"
+else
+  if [ -z "$PANEL_AUTH" ]; then
+    if [ -n "$EXISTING_AUTH_MODE" ]; then
+      PANEL_AUTH="$EXISTING_AUTH_MODE"
+    else
+      PANEL_AUTH=$(ask "panel authentication (required/disabled)" "required")
+    fi
+  fi
+  case "$PANEL_AUTH" in
+    required|disabled) ;;
+    *) die "panel authentication must be required or disabled (got: $PANEL_AUTH)" ;;
+  esac
+  if [ "$PANEL_AUTH" = "required" ]; then
+    good "the panel will sign people in"
+  else
+    good "the panel will answer as the local operator, on loopback only"
+    note "reaching it already means having this machine; run 'portta config set panel.auth required' to change that"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -898,25 +822,12 @@ step "Configuration"
 # from "this is the template's default". Only a file that already existed
 # carries a choice.
 ENV_WAS_CREATED=false
-if [ ! -f "$ENV_FILE" ]; then
-  cp "$PORTTA_HOME/.env.example" "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-  ENV_WAS_CREATED=true
-  good "created .env from the shipped example"
-else
-  chmod 600 "$ENV_FILE"
-  good "kept the existing .env; only the settings below were reconciled"
-fi
-
-# Generated once and never regenerated: rotating it would orphan the volume.
-if [ -z "$(env_get "$ENV_FILE" PORTTA_RUNTIME_DB_PASSWORD)" ]; then
-  env_set "$ENV_FILE" PORTTA_RUNTIME_DB_PASSWORD "$(random_hex 32)"
-  good "generated the panel database credential"
-fi
-if [ -z "$(env_get "$ENV_FILE" PORTTA_AUTH_SECRET)" ]; then
-  env_set "$ENV_FILE" PORTTA_AUTH_SECRET "$(random_hex 32)"
-  good "generated the authentication signing secret"
-fi
+[ -f "$ENV_FILE" ] || ENV_WAS_CREATED=true
+# The downloaded zero-Node adapter is shared with bootstrap and the CLI fallback.
+. "$PORTTA_HOME/scripts/lib/env.sh"
+env_get() { portta_env_get "$1" "$2"; }
+portta_prepare_env "$ENV_FILE" || die "environment preparation failed"
+good "prepared .env from the installation template"
 
 PANEL_IMAGE="${PORTTA_REGISTRY}/portta:${NEW_VERSION}"
 
@@ -932,10 +843,16 @@ else
   good "keeping the configured profile: $EXISTING_PROFILE"
 fi
 env_set "$ENV_FILE" PORTTA_WEB "true"
-env_set "$ENV_FILE" PORTTA_WEB_IMAGE "$PANEL_IMAGE"
-env_set "$ENV_FILE" PORTTA_AUTH_IMAGE "$PANEL_IMAGE"
-env_set "$ENV_FILE" PORTTA_WEB_BUILD "false"
-env_set "$ENV_FILE" PORTTA_WEB_DEV "false"
+for imagekey in PORTTA_WEB_IMAGE PORTTA_AUTH_IMAGE; do
+  configured_image=$(env_get "$ENV_FILE" "$imagekey")
+  case "$configured_image" in
+    ""|"${PORTTA_REGISTRY}/portta:${PREVIOUS_VERSION:-}") env_set "$ENV_FILE" "$imagekey" "$PANEL_IMAGE" ;;
+  esac
+done
+if [ "$ENV_WAS_CREATED" = true ]; then
+  env_set "$ENV_FILE" PORTTA_WEB_BUILD "false"
+  env_set "$ENV_FILE" PORTTA_WEB_DEV "false"
+fi
 if [ -z "$(env_get "$ENV_FILE" PORTTA_PROJECTS_HOME)" ]; then
   env_set "$ENV_FILE" PORTTA_PROJECTS_HOME "$PROJECTS_HOME"
   good "Projects Home: $PROJECTS_HOME"
@@ -947,11 +864,11 @@ env_set "$ENV_FILE" PORTTA_WEB_BIND_ADDRESS "$PANEL_BIND"
 env_set "$ENV_FILE" PORTTA_WEB_PORT "$PANEL_PORT"
 # The panel writes .env from its Settings page and reads it at startup, so it
 # runs as whoever owns PORTTA_HOME rather than as the image's default uid.
-env_set "$ENV_FILE" PORTTA_WEB_USER "${CURRENT_UID}:${CURRENT_GID}"
+[ -n "$(env_get "$ENV_FILE" PORTTA_WEB_USER)" ] || env_set "$ENV_FILE" PORTTA_WEB_USER "${CURRENT_UID}:${CURRENT_GID}"
 # The authentication service reads .env once and the protection store on every
 # request. Both are owner-only and owned by whoever ran this installer -- root,
 # on a VPS -- so the image's default uid could open neither.
-env_set "$ENV_FILE" PORTTA_AUTH_USER "${CURRENT_UID}:${CURRENT_GID}"
+[ -n "$(env_get "$ENV_FILE" PORTTA_AUTH_USER)" ] || env_set "$ENV_FILE" PORTTA_AUTH_USER "${CURRENT_UID}:${CURRENT_GID}"
 
 if [ -n "$DOMAIN" ]; then
   env_set "$ENV_FILE" PUBLIC_DOMAIN "$DOMAIN"
@@ -1075,8 +992,9 @@ case "$PANEL_ACCESS" in
   tailscale) ADVERTISED="$TAILSCALE_IP" ;;
   local) ADVERTISED="127.0.0.1" ;;
   domain)
-    # The Compose router matches this exact value and so does the credential
-    # lookup, so it is the one setting that decides where the panel answers.
+    # The Compose router matches this exact value, and so does the panel's own
+    # PORTTA_PANEL_URL, so it is the one setting that decides where the panel
+    # answers and which origin its session cookie belongs to.
     ADVERTISED=$(env_get "$ENV_FILE" PORTTA_PANEL_ADVERTISED_HOST)
     [ -n "$ADVERTISED" ] || ADVERTISED="$PROJECT_DOMAIN"
     case "$ADVERTISED" in
@@ -1084,7 +1002,7 @@ case "$PANEL_ACCESS" in
         die "--panel-access domain needs a real hostname to route on, and this host would advertise $ADVERTISED. Pass --domain and --domain-mode custom" ;;
     esac
     [ "$(env_get "$ENV_FILE" TLS_ENABLED)" = "true" ] \
-      || die "--panel-access domain would carry the panel credential in clear text. Pass --tls <email>"
+      || die "--panel-access domain would carry the panel's session cookie in clear text. Pass --tls <email>"
     ;;
   *)
     ADVERTISED=$(env_get "$ENV_FILE" PORTTA_PANEL_ADVERTISED_HOST)
@@ -1093,37 +1011,42 @@ case "$PANEL_ACCESS" in
 esac
 env_set "$ENV_FILE" PORTTA_PANEL_ADVERTISED_HOST "$ADVERTISED"
 
-if [ "$PANEL_AUTH_MODE" = "basic" ]; then
-  if [ -n "$PANEL_PASSWORD" ]; then
-    PANEL_HASH=$(hash_password "$PANEL_PASSWORD")
-    env_set "$ENV_FILE" PORTTA_WEB_AUTH "basic"
-    env_set "$ENV_FILE" PORTTA_WEB_AUTH_USER "$PANEL_USER"
-    env_set "$ENV_FILE" PORTTA_WEB_AUTH_HASH "$PANEL_HASH"
-  else
-    PANEL_HASH="$EXISTING_AUTH_HASH"
-  fi
-  # Render the legacy file first so an upgrade cannot briefly expose the panel.
-  # The lifecycle migration lifts this credential into the private store and
-  # replaces the file with ForwardAuth before the router becomes reachable.
-  cat > "$PORTTA_HOME/config/traefik/dynamic/portta-panel.yaml" <<YAML
+env_set "$ENV_FILE" PORTTA_AUTH_MODE "$PANEL_AUTH"
+
+# Where a browser reaches the panel. The panel derives three things from it:
+# whether the session cookie may be `Secure`, which origins a sign-in is
+# accepted from, and the address it prints.
+case "$PANEL_ACCESS" in
+  domain) env_set "$ENV_FILE" PORTTA_PANEL_URL "https://${ADVERTISED}" ;;
+  vpn)
+    # Not an installer mode -- `portta web up --expose vpn` is -- but an update
+    # of a host already in it must not rewrite the URL to an address that mode
+    # does not answer on.
+    VPN_HOST=$(env_get "$ENV_FILE" PORTTA_WEB_HOST); [ -n "$VPN_HOST" ] || VPN_HOST="portta-web"
+    VPN_DOMAIN=$(env_get "$ENV_FILE" PRIVATE_DOMAIN)
+    [ -n "$VPN_DOMAIN" ] || VPN_DOMAIN="$PROJECT_DOMAIN"
+    VPN_SCHEME=http
+    [ "$(env_get "$ENV_FILE" TLS_ENABLED)" = "true" ] && VPN_SCHEME=https
+    env_set "$ENV_FILE" PORTTA_PANEL_URL "${VPN_SCHEME}://${VPN_HOST}.${VPN_DOMAIN}"
+    ;;
+  *)      env_set "$ENV_FILE" PORTTA_PANEL_URL "http://${ADVERTISED}:${PANEL_PORT}" ;;
+esac
+
+# An upgrade from a Portta whose panel sat behind Traefik: the generated file
+# still declares the middleware that guarded it, and the router no longer names
+# it. Written empty rather than deleted, because Traefik watches the directory
+# and a file that merely stops being updated keeps working.
+cat > "$PORTTA_HOME/config/traefik/dynamic/portta-panel.yaml" <<'YAML'
 # ============================================================================
 # Generated by the Portta installer. Edits are overwritten.
 # ============================================================================
-# Transitional upgrade boundary. Portta replaces this with ForwardAuth before
-# completing installation. See docs/adr/0027-forward-authentication-service.md.
+# The panel authenticates its own requests: it is a Next application with
+# Better Auth behind it, not a router with a credential in front of it.
+# Nothing routes through Traefik middleware to reach it any more.
+# See docs/adr/0035-authentication-lives-in-the-panel.md.
 # ============================================================================
-http:
-  middlewares:
-    portta-web-auth:
-      basicAuth:
-        users:
-          - "${PANEL_USER}:${PANEL_HASH}"
-        realm: "Portta"
-        removeHeader: true
 YAML
-  chmod 600 "$PORTTA_HOME/config/traefik/dynamic/portta-panel.yaml"
-  good "authentication configured for user '$PANEL_USER'"
-fi
+chmod 600 "$PORTTA_HOME/config/traefik/dynamic/portta-panel.yaml"
 
 cat > "$PORTTA_HOME/install-manifest.json" <<JSON
 {
@@ -1158,7 +1081,7 @@ portta() { # run the installed CLI against this PORTTA_HOME
 
 # The shared and control networks must exist before Compose resolves the
 # `external: true` references. bootstrap is idempotent and does exactly that.
-portta bootstrap --skip-pull >/dev/null 2>&1 || true
+portta bootstrap --skip-pull || die "bootstrap failed"
 
 # The overlay list and the two values the overlays interpolate that are
 # derived rather than stored: the base domain comes from the mode, and the bind
@@ -1179,12 +1102,13 @@ RESOLVED_BIND=$(printf '%s' "$COMPOSE_RESOLVED" | sed -n 2p)
 COMPOSE_ARGS=$(printf '%s' "$COMPOSE_RESOLVED" | sed -n 3p)
 
 # `.env` is handed to Compose as a file, never sourced: a value there is data,
-# and the apr1 hash in it is full of characters a shell would happily act on.
+# and a generated secret is full of characters a shell would happily act on.
 #
 # The two derived values are exported, because an environment variable beats
 # the env-file. Without that, Compose would interpolate the stored
 # PORTTA_BIND_ADDRESS and start the public profile bound to loopback.
 run_compose() {
+  portta_load_env "$ENV_FILE" || return 1
   # shellcheck disable=SC2086
   ( cd "$PORTTA_HOME" \
     && export PORTTA_DOMAIN="$RESOLVED_DOMAIN" PORTTA_BIND_ADDRESS="$RESOLVED_BIND" \
@@ -1202,20 +1126,6 @@ if ! run_compose pull --quiet; then
 fi
 good "images pulled"
 
-# The early apr1 render keeps an interrupted upgrade compatible with the old
-# proxy contract. Once the new image is present, every newly supplied password
-# is upgraded before migration, over stdin so it never appears in `ps`.
-if [ -n "$PANEL_PASSWORD" ]; then
-  PANEL_HASH=$(printf '%s\n' "$PANEL_PASSWORD" | run_compose run --rm -T --no-deps \
-    portta-auth node /app/apps/auth/dist/hash.js 2>/dev/null) \
-    || die "could not hash the panel password with scrypt"
-  case "$PANEL_HASH" in
-    '$portta$scrypt$'*) ;;
-    *) die "the authentication image returned an invalid password hash" ;;
-  esac
-  env_set "$ENV_FILE" PORTTA_WEB_AUTH_HASH "$PANEL_HASH"
-fi
-
 if [ "$PULL_ONLY" = "true" ]; then
   step "Done"
   say "--pull-only: images are up to date and nothing else was changed"
@@ -1228,8 +1138,9 @@ fi
 
 step "Starting Portta"
 
-# Lift legacy BasicAuth credentials into the private store before any router
-# can switch to ForwardAuth.
+# Render ForwardAuth for project hostnames and shares, and lift any credential
+# an older Portta left in a Traefik file into the private store. The panel is
+# not part of this any more: it signs its own people in.
 #
 # Through the `portta-auth-migrate` service rather than by rebuilding its three
 # mounts here with -v flags: the service already declares them, and two
@@ -1238,39 +1149,14 @@ step "Starting Portta"
 run_compose run --rm --no-deps portta-auth-migrate >/dev/null \
   || die "existing authentication state could not be migrated"
 
-# The panel database first, and on its own, because the credential in .env has
-# to be reconciled with it before anything tries to use it.
-#
-# The volume outlives PORTTA_HOME by design: --uninstall keeps it so an
-# accidental removal does not take the data with it. But the password lives in
-# .env, which --uninstall does remove, so a later install generates a new one
-# and PostgreSQL still expects the old. The panel then starts, answers /health,
-# and silently persists nothing — persistence is optional at runtime by design
-# (ADR 0013), which is exactly what makes this failure quiet.
-#
-# So .env is made authoritative: the password there is set on the role, over
-# the container's own trusted local socket. Idempotent, and it keeps the data.
-run_compose up -d --wait --wait-timeout 120 db \
-  || die "the panel database did not become healthy. Inspect it with: $PORTTA_HOME/bin/portta logs db"
-
-DB_CONTAINER=$(docker ps -q --filter "label=portta.component=db" | head -n1)
-if [ -n "$DB_CONTAINER" ]; then
-  # The statement text comes from here and carries no secret; the password
-  # comes from the container's own environment, where Compose already put it,
-  # into a psql variable that psql quotes as a literal. Nothing interpolates a
-  # password into SQL, and it never reaches a command line on this host.
-  #
-  # On stdin rather than through -c: psql expands :'var' only in input it
-  # reads, never in a -c string.
-  if printf "ALTER USER portta WITH PASSWORD :'p';\n" \
-     | docker exec -i "$DB_CONTAINER" sh -c \
-         'psql -U portta -d portta -v ON_ERROR_STOP=1 -q -v p="$POSTGRES_PASSWORD"' \
-       >/dev/null 2>&1; then
-    good "panel database credential reconciled"
-  else
-    warn "could not reconcile the panel database credential"
-    note "the panel will run without persistence; $PORTTA_HOME/bin/portta logs db has the detail"
-  fi
+# Never rotate a persistent cluster's credential during installation.
+# Compose health waits for TCP readiness; the panel authenticates and migrates
+# before it starts serving. All lookups are scoped to this Compose project.
+DB_CONTAINER=""
+if [ "$(env_get "$ENV_FILE" PORTTA_RUNTIME_DB_MODE)" != external ]; then
+  run_compose up -d --wait --wait-timeout 120 db \
+    || die "the panel database did not become healthy; inspect portta logs db"
+  DB_CONTAINER=$(run_compose ps -q db)
 fi
 
 run_compose up -d --remove-orphans --wait --wait-timeout 240 \
@@ -1285,31 +1171,26 @@ step "Health checks"
 
 container_health() { # container_health <component>
   local cid
-  cid=$(docker ps -q --filter "label=portta.component=$1" | head -n1)
+  cid=$(run_compose ps -q "$1")
   [ -n "$cid" ] || { printf 'absent'; return; }
   docker inspect "$cid" --format '{{ if .State.Health }}{{ .State.Health.Status }}{{ else }}{{ .State.Status }}{{ end }}' 2>/dev/null
 }
 
 HEALTH_OK=true
 
-# The panel keeps running when its database refuses it — persistence is
-# optional at runtime — so a healthy container proves nothing about whether
-# anything will actually be saved. Ask PostgreSQL whether the credential in
-# .env works, which is the thing that breaks.
+# Prove authentication over TCP, not a trusted local Unix socket.
 if [ -n "${DB_CONTAINER:-}" ]; then
-  # Over TCP with the password, which is the path the panel actually takes;
-  # the local socket is trusted and would prove nothing.
   if docker exec "$DB_CONTAINER" sh -c \
-       'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -U portta -d portta -At -c "select 1"' >/dev/null 2>&1; then
+       'PGPASSWORD="$POSTGRES_PASSWORD" psql -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "select 1"' >/dev/null 2>&1; then
     good "the panel can authenticate to its database"
   else
-    bad "the panel database rejects the credential in .env"
-    note "persistence will be unavailable; docker volume rm portta-db starts a fresh one"
+    bad "the database rejects the configured credential; recover the credential or rotate it explicitly (see docs/persistence.md)"
     HEALTH_OK=false
   fi
 fi
 
 for component in traefik socket-proxy web web-socket-proxy db; do
+  if [ "$component" = db ] && [ "$(env_get "$ENV_FILE" PORTTA_RUNTIME_DB_MODE)" = external ]; then continue; fi
   state=$(container_health "$component")
   case "$state" in
     healthy|running) good "$component: $state" ;;
@@ -1341,39 +1222,63 @@ probe_until() { # probe_until <expected> <curl args...>
   printf '%s' "$_code"
 }
 
+# What is checked here is the same in every mode: the panel answers, and it says
+# it has nobody yet. `/api/auth/status` is public in both modes for exactly this
+# -- a browser has to learn whether to show a sign-in page before it has one --
+# and it is the only thing that can say whether an owner exists, because the
+# owner lives in the database rather than in .env.
+#
+# It replaces the old probe for HTTP 401: the panel used to refuse everything
+# without a Traefik credential, and it now answers this one endpoint to
+# everybody and refuses the rest.
 case "$PANEL_ACCESS" in
   domain)
     # No host port in this mode: the router is the only way in, so the probe has
     # to arrive the way a browser does -- by name, on the gateway's entrypoint.
     # --resolve keeps it on this host instead of going out and back through DNS,
     # and -k because the certificate may still be minutes from issuance.
-    code=$(probe_until 401 --resolve "${ADVERTISED}:443:127.0.0.1" -k "https://${ADVERTISED}/api/health")
-    if [ "$code" = "401" ]; then
-      good "the panel refuses unauthenticated requests on https://${ADVERTISED} (HTTP 401)"
-    else
-      bad "expected HTTP 401 from https://${ADVERTISED} without credentials, got $code"
-      HEALTH_OK=false
-    fi
+    PANEL_PROBE="--resolve ${ADVERTISED}:443:127.0.0.1 -k https://${ADVERTISED}/api/auth/status"
+    PANEL_PROBE_WHERE="https://${ADVERTISED}"
     ;;
   public)
-    code=$(probe_until 401 "http://127.0.0.1:${PANEL_PORT}/api/health")
-    if [ "$code" = "401" ]; then
-      good "the panel refuses unauthenticated requests (HTTP 401)"
-    else
-      bad "expected HTTP 401 from the panel without credentials, got $code"
-      HEALTH_OK=false
-    fi
+    PANEL_PROBE="http://127.0.0.1:${PANEL_PORT}/api/auth/status"
+    PANEL_PROBE_WHERE="port ${PANEL_PORT}"
     ;;
   *)
-    code=$(probe_until 200 "http://${PANEL_BIND}:${PANEL_PORT}/api/health")
-    if [ "$code" = "200" ]; then
-      good "the panel answers on ${PANEL_BIND}:${PANEL_PORT}"
-    else
-      bad "the panel did not answer on ${PANEL_BIND}:${PANEL_PORT} (HTTP $code)"
-      HEALTH_OK=false
-    fi
+    PANEL_PROBE="http://${PANEL_BIND}:${PANEL_PORT}/api/auth/status"
+    PANEL_PROBE_WHERE="${PANEL_BIND}:${PANEL_PORT}"
     ;;
 esac
+
+# The probe is built above from values this script checked; the word splitting
+# is what turns it into curl arguments.
+# shellcheck disable=SC2086
+code=$(probe_until 200 $PANEL_PROBE)
+if [ "$code" = "200" ]; then
+  good "the panel answers on ${PANEL_PROBE_WHERE}"
+  # shellcheck disable=SC2086
+  status_body=$(curl -s --max-time 10 $PANEL_PROBE 2>/dev/null || printf '')
+  case "$status_body" in
+    *'"setupRequired":true'*)
+      good "it has no owner yet, and says so: the first account is created at /setup" ;;
+    *'"setupRequired":false'*)
+      good "it already has an owner; sign in with that account" ;;
+    *)
+      if [ "$PANEL_AUTH" = "required" ]; then
+        bad "the panel did not report whether it needs setting up"
+        HEALTH_OK=false
+      fi
+      ;;
+  esac
+  case "$PANEL_AUTH:$status_body" in
+    required:*'"mode":"open"'*)
+      bad "the panel is running in open mode with PORTTA_AUTH_MODE=required in .env"
+      HEALTH_OK=false ;;
+  esac
+else
+  bad "the panel did not answer on ${PANEL_PROBE_WHERE} (HTTP $code)"
+  HEALTH_OK=false
+fi
 
 # ---------------------------------------------------------------------------
 # 12. Put the CLI on PATH
@@ -1502,17 +1407,16 @@ printf '  %-14s %s\n' "panel access" "$PANEL_ACCESS" >&2
 printf '  %-14s %s\n' "panel" "$PANEL_URL" >&2
 printf '  %-14s %s\n' "projects" "*.${PROJECT_DOMAIN}" >&2
 
-if [ "$PANEL_AUTH_MODE" = "basic" ]; then
-  printf '  %-14s %s\n' "user" "$PANEL_USER" >&2
-  if [ -n "$PANEL_PASSWORD" ]; then
-    printf '  %-14s %s%s%s\n' "password" "$C_BOLD" "$PANEL_PASSWORD" "$C_RESET" >&2
-    if [ "$PANEL_PASSWORD_GENERATED" = "true" ]; then
-      note "this is the only time it is shown; store it now"
-    fi
-  else
-    printf '  %-14s %s\n' "password" "unchanged (only its hash is stored)" >&2
-    note "portta web auth set generates a new one and shows it once"
-  fi
+printf '  %-14s %s\n' "authentication" "$PANEL_AUTH" >&2
+
+if [ "$PANEL_AUTH" = "required" ]; then
+  printf '\n' >&2
+  say "this panel has no accounts yet. Create the first one, which owns it:"
+  say ""
+  say "    ${PANEL_URL}/setup"
+  say ""
+  note "or from this host, with no browser: portta auth bootstrap --email you@example.com"
+  note "sign-up closes as soon as that account exists; it creates everyone else"
 fi
 
 case "$PANEL_ACCESS" in

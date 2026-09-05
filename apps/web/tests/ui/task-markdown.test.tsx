@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
-import { TaskDescription } from '../../src/ui/components/tasks/task-description.tsx'
-import { MarkdownEditor } from '../../src/ui/components/tasks/markdown-editor.tsx'
-import { MarkdownView } from '../../src/ui/components/tasks/markdown-view.tsx'
-import { EditableTitle } from '../../src/ui/components/tasks/editable-title.tsx'
+import { TaskDescription } from '@/components/tasks/task-description'
+import { MarkdownEditor } from '@/components/tasks/markdown-editor'
+import { MarkdownView } from '@/components/tasks/markdown-view'
+import { EditableTitle } from '@/components/tasks/editable-title'
 
 describe('task Markdown editing', () => {
   it('saves an inline title with Enter, and Escape restores the previous title', async () => {

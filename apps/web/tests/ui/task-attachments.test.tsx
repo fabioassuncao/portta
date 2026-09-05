@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, screen, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
-import { TaskAttachments } from '../../src/ui/components/tasks/task-attachments.tsx'
-import type { TaskAttachment } from '../../src/shared/task-types.ts'
+import { TaskAttachments } from '@/components/tasks/task-attachments'
+import type { TaskAttachment } from 'portta-contracts'
 
 function attachment(overrides: Partial<TaskAttachment> = {}): TaskAttachment {
   return {

@@ -1,8 +1,8 @@
 # DNS and TLS
 
 The panel opens these controls directly at
-[TLS settings](http://127.0.0.1:8081/#/settings/tls) and
-[DNS settings](http://127.0.0.1:8081/#/settings/dns).
+[TLS settings](http://127.0.0.1:8081/settings/general/tls) and
+[DNS settings](http://127.0.0.1:8081/settings/general/dns).
 
 ## Local: neither is needed
 

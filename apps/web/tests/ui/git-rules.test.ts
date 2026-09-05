@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { changedCount, gitState } from '../../src/ui/lib/git.ts'
+import { changedCount, gitState } from '@/lib/git'
 
 const git = (over: Partial<Parameters<typeof gitState>[0] & object> = {}) => ({
   branch: 'main', detached: false,

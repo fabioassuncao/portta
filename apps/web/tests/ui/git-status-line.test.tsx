@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithQuery } from './render.tsx'
-import { GitStatusLine } from '../../src/ui/components/entities/git-status-line.tsx'
-import type { ProjectGit } from '../../src/shared/types.ts'
+import { GitStatusLine } from '@/components/entities/git-status-line'
+import type { ProjectGit } from 'portta-contracts'
 
 function collected(overrides: Partial<ProjectGit> = {}): ProjectGit {
   return {

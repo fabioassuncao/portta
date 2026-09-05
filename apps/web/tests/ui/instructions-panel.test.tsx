@@ -3,7 +3,7 @@ import { screen } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
 import { makeRepositoryGit } from './fixtures.ts'
-import { InstructionsPanel } from '../../src/ui/components/entities/instructions-panel.tsx'
+import { InstructionsPanel } from '@/components/entities/instructions-panel'
 
 describe('the instructions panel', () => {
   const files = makeRepositoryGit().instructions

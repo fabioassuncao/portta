@@ -5,7 +5,7 @@ import { makeContainer, makeService } from './fixtures.ts'
 
 const logs = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError: class ApiError extends Error {},
   api: {
     logs: (...args: unknown[]) => logs(...args),
@@ -17,7 +17,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { ServiceDrawer } = await import('../../src/ui/components/entities/service-drawer.tsx')
+const { ServiceDrawer } = await import('@/components/entities/service-drawer')
 
 const web = makeContainer({
   id: 'a-web', name: 'alpha-web-1', environment: 'alpha', service: 'web', ownership: 'integrated', traefikEnabled: true, onGatewayNetwork: true, kind: 'http',
@@ -39,7 +39,7 @@ describe('the service drawer', () => {
     expect(screen.getByText(/bind: \/srv\/dev\/alpha → \/app/)).toBeInTheDocument()
     expect(screen.getByText('portta, alpha_default')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Share with a password/ })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Open environment' })).toHaveAttribute('href', '#/environments/alpha')
+    expect(screen.getByRole('link', { name: 'Open environment' })).toHaveAttribute('href', '/environments/alpha')
   })
 
   it('reads the logs inline', async () => {

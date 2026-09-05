@@ -3,7 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
 import { makeContainer, makeEnvironment, makeOperable, makeStartable } from './fixtures.ts'
-import type { Environment } from '../../src/shared/types.ts'
+import type { Environment } from 'portta-contracts'
 
 const environments = vi.fn()
 const projects = vi.fn()
@@ -12,7 +12,7 @@ const containerAction = vi.fn()
 const environmentAction = vi.fn()
 const serviceAction = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error { status = 0 },
   api: {
     projects: () => projects(),
@@ -32,7 +32,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { EnvironmentsPage } = await import('../../src/ui/pages/Environments.tsx')
+const { EnvironmentsView: EnvironmentsPage } = await import('../../app/(panel)/environments/environments-view.tsx')
 
 const WEB_URL = { url: 'http://alpha-web.localhost', host: 'alpha-web.localhost', scope: 'local' as const, scheme: 'http' as const }
 const API_URLS = [
@@ -81,7 +81,7 @@ describe('the Environments page', () => {
 
   it('says which project adopted an environment, and when none did', async () => {
     renderWithQuery(<EnvironmentsPage />)
-    expect(await screen.findByRole('link', { name: 'Project: Shop' })).toHaveAttribute('href', '#/projects/shop')
+    expect(await screen.findByRole('link', { name: 'Project: Shop' })).toHaveAttribute('href', '/projects/shop')
     expect(screen.getByText('not adopted by any project')).toBeInTheDocument()
   })
 
@@ -157,7 +157,7 @@ describe('the Environments page', () => {
 
   it('links the environment heading to its page', async () => {
     renderWithQuery(<EnvironmentsPage />)
-    expect(await screen.findByRole('link', { name: 'alpha' })).toHaveAttribute('href', '#/environments/alpha')
+    expect(await screen.findByRole('link', { name: 'alpha' })).toHaveAttribute('href', '/environments/alpha')
   })
 
   it('explains how to adopt an environment when there is none', async () => {

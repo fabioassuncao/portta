@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { orderEndpoints, primaryEndpoint } from '../../src/ui/lib/endpoints.ts'
+import { orderEndpoints, primaryEndpoint } from '@/lib/endpoints'
 
 const url = (u: string, scope: 'local' | 'vpn' | 'public', scheme: 'http' | 'https') => ({ url: u, host: u, scope, scheme })
 

@@ -10,6 +10,11 @@
       "types": "./src/index.ts",
       "development": "./src/index.ts",
       "import": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./src/browser.ts",
+      "development": "./src/browser.ts",
+      "import": "./dist/browser.js"
     }
   },
   "files": [

@@ -17,10 +17,21 @@ describe('ForwardAuth dynamic file', () => {
     expect(router).not.toContain('middlewares:')
   })
 
-  it('keeps the panel scope explicit without putting credentials in YAML', () => {
+  // The panel is not behind this middleware any more: it signs people in
+  // itself. A `scope=panel` address here would send its requests through a
+  // second opinion that decides nothing.
+  it('declares one middleware, for projects and shares, and never the panel', () => {
     const yaml = renderAuthDynamic(emptyProtectionStore())
-    expect(yaml).toContain('/verify?scope=panel')
+    expect(yaml).not.toContain('scope=panel')
+    expect(yaml).not.toContain('portta-web-auth')
     expect(yaml).not.toContain('basicAuth')
     expect(yaml).not.toContain('users:')
+  })
+
+  // The header list is what the ForwardAuth response is allowed to set on the
+  // request behind it. Anything left in it that nothing writes is an opening.
+  it('forwards attribution and nothing that decides a permission', () => {
+    const yaml = renderAuthDynamic(emptyProtectionStore())
+    expect(yaml).toContain('authResponseHeaders: [X-Forwarded-User, X-Portta-Actor, X-Portta-Actor-Kind]')
   })
 })

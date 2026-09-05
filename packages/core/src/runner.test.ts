@@ -6,8 +6,8 @@ import {
   runnerCreateArguments,
   runnerRefusal,
   runnerSpec,
-  RUNNER_IMAGE,
 } from './runner.ts'
+import { porttaImages } from './images.ts'
 
 describe('parseRunnerRequest', () => {
   it('accepts every verb in the closed set', () => {
@@ -116,7 +116,7 @@ describe('runnerRefusal', () => {
 })
 
 describe('the container it would create', () => {
-  const args = runnerCreateArguments('/opt/portta', runnerSpec('/opt/portta', '0.7.2'))
+  const args = runnerCreateArguments('/opt/portta', runnerSpec('/opt/portta', '0.7.2'), '0.7.2')
 
   it('takes no network, so it cannot be a pivot', () => {
     expect(args).toContain('--network')
@@ -133,6 +133,6 @@ describe('the container it would create', () => {
   })
 
   it('records the image in its spec', () => {
-    expect(runnerSpec('/opt/portta', '0.7.2')).toContain(RUNNER_IMAGE)
+    expect(runnerSpec('/opt/portta', '0.7.2')).toContain(porttaImages('0.7.2').apply)
   })
 })

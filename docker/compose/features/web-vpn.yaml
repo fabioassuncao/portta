@@ -9,11 +9,10 @@
 # binds every interface and a router would therefore be public. It must never
 # be reachable from the internet.
 #
-# The router points at the shared ForwardAuth middleware rendered into
-# config/traefik/dynamic/portta-auth.yaml. The credential lives only in the
-# private store, and the CLI refuses this overlay until one exists.
-# A middleware Traefik cannot resolve makes the router fail closed, which is
-# the correct direction to fail. See docs/adr/0012-panel-authentication-is-traefiks.md.
+# There is no middleware on the router: the panel signs people in itself, and
+# `portta web up --expose vpn` refuses unless PORTTA_AUTH_MODE=required. The
+# tailnet is the first boundary and the panel's own login is the second.
+# See docs/adr/0035-authentication-lives-in-the-panel.md.
 # ============================================================================
 
 services:
@@ -22,5 +21,4 @@ services:
       traefik.enable: "true"
       traefik.http.routers.portta-web.rule: >-
         Host(`${PORTTA_WEB_HOST:-portta-web}.${PORTTA_DOMAIN:-localhost}`)
-      traefik.http.routers.portta-web.middlewares: "portta-forward-auth@file"
       traefik.http.services.portta-web.loadbalancer.server.port: "8081"

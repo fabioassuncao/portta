@@ -1,3 +1,4 @@
+import { patchEnvFile } from 'portta-core'
 import { lookup } from 'node:dns/promises'
 import { join } from 'node:path'
 import type { Command } from 'commander'
@@ -6,7 +7,6 @@ import { composeArguments, gatewayContext } from '../context.js'
 import { inspectContainers } from '../docker.js'
 import { PreconditionError, RefusedError, UsageError } from '../errors.js'
 import { Output } from '../output.js'
-import { readEnvFile, setEnvValue, writeEnvFile } from 'portta-core'
 import { runProcess } from '../process.js'
 
 function globals(command: Command) { return command.optsWithGlobals() as { json?: boolean; yes?: boolean; quiet?: boolean; verbose?: boolean; profile?: string } }
@@ -42,7 +42,7 @@ export async function publicStatus(command: Command): Promise<void> {
 async function writeSetting(key: string, value: string, command: Command): Promise<void> {
   const context = gatewayContext({ profile: globals(command).profile })
   const path = join(context.root, '.env')
-  writeEnvFile(path, setEnvValue(readEnvFile(path), key, value))
+  patchEnvFile(path, { [key]: value })
 }
 
 export async function publicEnable(command: Command): Promise<void> {

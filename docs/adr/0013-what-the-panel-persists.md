@@ -1,6 +1,6 @@
 # 0013. The panel persists decisions, never observations
 
-**Status:** Accepted
+**Status:** Accepted, amended by [0037](0037-drizzle-and-a-required-database.md) — the database is no longer optional, and the panel refuses to start without it
 
 ## Context
 

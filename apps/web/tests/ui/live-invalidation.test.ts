@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { QueryClient } from '@tanstack/react-query'
-import { invalidateFor, keysFor } from '../../src/ui/lib/live.ts'
+import { invalidateFor, keysFor } from '@/lib/live'
 
 const event = (kind: string, extra: Partial<{ action: string; name: string | null; project: string | null }> = {}) =>
   ({ kind: kind as never, action: 'start', name: null, project: null, ...extra })

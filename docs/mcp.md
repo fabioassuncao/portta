@@ -50,26 +50,26 @@ claude mcp add portta -- portta mcp --actor claude-code
 | `--url <url>`, `PORTTA_URL` | The panel API base. Defaults to `http://127.0.0.1:<PORTTA_WEB_PORT>`; `PORTTA_PANEL_URL` is a compatibility alias |
 | `--allow-remote` | Permit a non-loopback panel URL. **Required** for one: that URL is where the panel credential would be sent |
 | `--actor <name>`, `PORTTA_MCP_ACTOR` | Sent on every call as `X-Portta-Actor`. Recorded on tasks, notes, sessions and activity; never forwarded to GitHub |
-| `PORTTA_WEB_AUTH_USER` + `PORTTA_PANEL_PASSWORD` | The panel credential, when the panel is authenticated |
-| `PORTTA_TOKEN` | Preferred non-interactive Bearer credential; the token supplies the authenticated actor and capabilities |
+| `PORTTA_TOKEN` | The Bearer credential a protected panel needs. The token names its owner, and what it holds is the intersection of its scopes and their role. Without it, whatever `portta auth login` saved for this panel is used |
 
 `portta mcp` refuses a non-loopback panel URL unless you pass `--allow-remote`,
 because that URL is where a credential goes.
 
 ## What the actor means
 
-`X-Portta-Actor` is self-declared. It does not authenticate anything — the
-panel credential did that — it says *which* caller behind that credential
-this is. Two things follow:
+`X-Portta-Actor` is self-declared. It does not authenticate anything — a token
+or a session does that — it says *which* caller this is. Two things follow:
 
 - every task, note, session and activity event carries the name, so a person
   reading the panel from elsewhere can tell what an agent did;
-- an agent that announces itself holds the capabilities of the
-  `agentCapabilities` setting rather than the operator's. By default that is
-  everything except destroying an environment or a container, writing the
-  gateway configuration, and opening a network path. A refused call answers
-  `not permitted` with the capability named. See
-  [ADR 0032](adr/0032-portta-development-model.md).
+- on a panel with `PORTTA_AUTH_MODE=disabled`, an agent that announces itself
+  holds the `agentPermissions` setting rather than everything. By default that
+  is a developer minus the three things that change how the panel behaves:
+  `environment:settings`, `repository:manage` and `github:sync`. A refused call
+  answers `403` with the permission named. On a protected panel the token
+  decides instead, and the header is attribution alone. See
+  [ADR 0032](adr/0032-portta-development-model.md) and
+  [ADR 0035](adr/0035-authentication-lives-in-the-panel.md).
 
 ## The tools
 
@@ -110,7 +110,7 @@ Work:
 | `start_session` | `POST /api/projects/:slug/sessions` | — |
 | `end_session` | `PATCH /api/sessions/:id` | — |
 
-Operation, gated by capability:
+Operation, each gated by the permission its route declares:
 
 | Tool | Reaches |
 |---|---|
@@ -173,8 +173,9 @@ edit is a `conflict`, kept and shown, never resolved silently.
 - **Read GitHub comments.** They are never projected. `comment_task` writes a
   local Portta comment; the UI/API can explicitly publish that comment as a
   copy when required.
-- **Destroy anything**, by default: removing an environment, a container or a
-  volume needs a capability the operator grants explicitly.
+- **Destroy anything**, by default: removing an environment or a container
+  needs `environment:destroy` or `container:destroy`, which an agent's token
+  does not hold unless somebody put it there.
 - **Reach a repository the App was not installed on**, or publish a task to
   a repository its Project does not own.
 - **Hold a GitHub credential, or the Docker socket.**
@@ -187,7 +188,7 @@ tell "you asked for something impossible" from "try again later":
 | The panel said | The tool says |
 |---|---|
 | 400 | `refused: …` — the request will never succeed as written |
-| 401, 403 | `not permitted: …` — read-only mode, a capability the actor does not hold, or no App configured |
+| 401, 403 | `not permitted: …` — no credential, read-only mode, a permission the caller does not hold, a Project they do not reach, or no App configured |
 | 404 | `not found: …` |
 | 503 | `temporarily unavailable, and worth retrying: …` — the database, a GitHub outage or an exhausted rate limit |
 | nothing | the panel URL, and why the connection failed |

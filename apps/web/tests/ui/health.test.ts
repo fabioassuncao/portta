@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { environmentHealth, healthTone } from '../../src/ui/lib/health.ts'
+import { environmentHealth, healthTone } from '@/lib/health'
 
 describe('environment health', () => {
   it('is one word per situation', () => {

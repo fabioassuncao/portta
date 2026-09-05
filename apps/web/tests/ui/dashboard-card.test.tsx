@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithQuery } from './render.tsx'
-import type { GatewayStatus } from '../../src/shared/types.ts'
+import type { GatewayStatus } from 'portta-contracts'
 
 const gateway = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError: class ApiError extends Error {},
   api: { gateway: () => gateway() },
 }))
 
-const { DashboardCard } = await import('../../src/ui/components/dashboard-card.tsx')
+const { DashboardCard } = await import('@/components/dashboard-card')
 
 function status(overrides: Partial<GatewayStatus['dashboard']> = {}): GatewayStatus {
   return {
@@ -32,9 +32,8 @@ function status(overrides: Partial<GatewayStatus['dashboard']> = {}): GatewaySta
     panel: {
       expose: 'local',
       routed: false,
-      auth: 'none',
+      auth: 'disabled',
       authenticated: false,
-      user: '',
       readOnly: false,
       docs: true,
     },
@@ -71,7 +70,7 @@ describe('the Traefik dashboard card', () => {
     renderWithQuery(<DashboardCard />)
     expect(await screen.findByRole('button', { name: 'Open the Traefik dashboard' })).toBeEnabled()
     expect(screen.getByText('http://127.0.0.1:8080/dashboard/')).toBeInTheDocument()
-    expect(screen.getByText('loopback only')).toBeInTheDocument()
+    expect(screen.getByText('this machine only')).toBeInTheDocument()
   })
 
   it('disables Open when nothing is usable from here', async () => {

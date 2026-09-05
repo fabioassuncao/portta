@@ -5,6 +5,8 @@ import { loadAuthConfig, validateAuthConfig } from './config.ts'
 const config = loadAuthConfig()
 validateAuthConfig(config)
 
+const version = process.env.PORTTA_RUNTIME_VERSION || 'unknown'
+
 serve({ fetch: createAuthApp({ config }).fetch, hostname: config.host, port: config.port }, (info) => {
-  process.stdout.write(`portta-auth listening on ${info.address}:${info.port}\n`)
+  process.stdout.write(`portta-auth ${version} listening on ${info.address}:${info.port}\n`)
 })

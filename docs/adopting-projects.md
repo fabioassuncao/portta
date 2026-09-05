@@ -61,7 +61,7 @@ your back. To protect a hostname, create its credential and opt the router into
 the generated middleware:
 
 ```bash
-portta auth protect demo-web.example.com --project demo --service web
+portta protect host demo-web.example.com --project demo --service web
 ```
 
 ```yaml

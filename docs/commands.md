@@ -10,8 +10,9 @@ and points to the detailed guides.
 |---|---|
 | `portta setup` | Provision or update a checkout idempotently; `--dry-run` prints the plan. |
 | `portta bootstrap` | Check the runtime, create gateway state and the shared network, then run diagnostics. |
+| `portta build` | Build the local `portta`, `portta-apply` and `portta-toolbox` images, all tagged with `VERSION`. |
 | `portta up [profile]` | Start `local`, `remote-private` or `remote-public`. `--demo` also starts `docker/examples` and imports their panel records. |
-| `portta dev [profile]` | Checkout setup from local Dockerfiles, never the published images. `--reset` wipes the panel database first. `--demo` starts `docker/examples` and imports their panel records. |
+| `portta dev [profile]` | Checkout development with bind mounts and watch for the panel and ForwardAuth. `--reset` wipes the panel database first. `--demo` starts `docker/examples` and imports their panel records. |
 | `portta down` | Stop gateway components; consumer projects keep running. `--demo` also stops the example stacks and drops their volumes. |
 | `portta reset` | Alias for `portta dev --reset`. Prints the steps it will run, and streams the builds. `--demo` recreates `docker/examples` and imports their panel records. Other development project volumes stay. Confirmation uses `--yes`, not `--force`. |
 | `portta restart` | Recreate gateway components without restarting applications. |
@@ -44,7 +45,6 @@ and points to the detailed guides.
 | `portta web logs` | Follow panel logs. |
 | `portta web down` | Stop the panel while leaving the gateway running. |
 | `portta web disable` | Disable and stop the panel. |
-| `portta web auth set|status|clear|apply` | Manage the panel's Portta login credential. |
 | `portta db status` | Inspect the panel PostgreSQL. |
 | `portta db migrate` | Apply pending panel SQL without restarting the panel. |
 | `portta db shell` | Open a shell with private database connectivity. |
@@ -82,9 +82,9 @@ See [Database access](database-access.md), [TCP access](tcp-access.md), and
 | `portta share list` | List temporary panel-created hostnames. |
 | `portta share revoke` | Revoke one temporary share. |
 | `portta share gc` | Remove expired shares. |
-| `portta auth protect <host>` | Create or rotate a protected-host credential. |
-| `portta auth status [host]` | Inspect protected hosts without exposing hashes. |
-| `portta auth unprotect <host>` | Remove a host record; the project label remains yours to remove. |
+| `portta protect host <host>` | Create or rotate a protected-host credential. |
+| `portta protect status [host]` | Inspect protected hosts without exposing hashes. |
+| `portta protect remove <host>` | Remove a host record; the project label remains yours to remove. |
 | `portta dns status` | Show DNS configuration and provider records. |
 | `portta dns check` | Verify the wildcard points at this host. |
 | `portta dns setup` | Plan or apply the wildcard record. |
@@ -92,6 +92,27 @@ See [Database access](database-access.md), [TCP access](tcp-access.md), and
 | `portta tls init` | Create a local CA and wildcard certificate. |
 | `portta tls trust` | Print the platform-specific CA trust command. |
 | `portta tls untrust` | Print the command that removes it again. |
+
+## The panel's accounts
+
+| Command | What it does |
+|---|---|
+| `portta auth login` | Save a token for a panel, after checking it. |
+| `portta auth status` | Whether this panel asks who you are, and who it thinks you are. |
+| `portta auth logout` | Forget the saved credential. The token itself stays valid. |
+| `portta auth whoami` | Every panel this host has a credential for. |
+| `portta auth token list\|create\|revoke` | Personal API tokens. A new secret is shown once. |
+| `portta auth bootstrap` | Create the owner, once, from this host. |
+| `portta auth reset-password <email>` | Reset a password inside the panel's container, when nobody can sign in to do it. |
+| `portta users list` | Every account, its role, and the Projects it reaches. |
+| `portta users create` | Create an account; a generated password is shown once. |
+| `portta users set-role <email> <role>` | Change a role. `owner` is transferred, not assigned. |
+| `portta users set-password <email>` | Set a password and end that account's sessions. |
+| `portta users grant <email> <project>` | Let an account reach one more Project. |
+| `portta users revoke <email> <project>` | Stop an account reaching a Project. |
+| `portta users remove <email>` | Remove an account, with its sessions, tokens and memberships. |
+
+See [Authentication](authentication.md) for the rules these obey.
 
 ## Projects, worktrees and remote hosts
 

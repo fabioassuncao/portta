@@ -9,7 +9,7 @@ describe('environment files', () => {
     const env = parseEnv("A=one\nB='two words'\nBAD LINE\nC=`touch /tmp/nope`\n")
     expect(Object.fromEntries(env)).toEqual({ A: 'one', B: 'two words', C: '`touch /tmp/nope`' })
   })
-  it('lets the process environment win', () => expect(mergeEnvironment(new Map([['A', 'file']]), { A: 'process' }).A).toBe('process'))
+  it('lets the installation environment win', () => expect(mergeEnvironment(new Map([['A', 'file']]), { A: 'process' }).A).toBe('file'))
   it('updates one key and preserves surrounding text', () => expect(setEnvValue('# x\nA=old\n', 'A', 'new')).toBe('# x\nA=new\n'))
 
   // .env is bind-mounted into the panel container as a single file, and a file
@@ -42,5 +42,25 @@ describe('environment files', () => {
     writeEnvFile(file, 'A=one\n')
     writeEnvFile(file, 'A=two\n')
     expect(readdirSync(directory)).toEqual(['.env'])
+  })
+})
+
+describe('canonical environment contract', () => {
+  const template = '# Portta environment structure: 1\n# Panel\nA=one\nB=two\n\n# Database\nC=three\n'
+  it('preserves CRLF, export, spacing, quotes, inline comments and unrelated lines', () => {
+    const before = '# Panel\r\n  export A = "8081"  # port\r\n\r\nB=unchanged\r\n'
+    expect(setEnvValue(before, 'A', '9000')).toBe(before.replace('8081', '9000'))
+  })
+  it('inserts a missing key before the next group', () => {
+    const before = template.replace('B=two\n', '')
+    expect(setEnvValue(before, 'B', 'two', template)).toBe(template)
+  })
+  it('rejects duplicate keys rather than editing a shadowed value', () => {
+    expect(() => setEnvValue('A=one\nA=two\n', 'A', 'three')).toThrow('duplicate')
+  })
+  it('round trips literal credential characters', () => {
+    for (const value of ['a$b#c', "a'b\\c", 'two words', 'a=b', '`literal`']) {
+      expect(parseEnv(setEnvValue('A=\n', 'A', value)).get('A')).toBe(value)
+    }
   })
 })

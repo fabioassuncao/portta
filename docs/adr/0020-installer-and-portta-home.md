@@ -130,6 +130,12 @@ The build moved to `docker/compose/features/web-build.yaml`, applied only when
 dev` still builds the `dev` target, because hot reload has nowhere else to come
 from.
 
+Local release builds are explicit: `portta build` (normally `just build`)
+builds the runtime, applier and toolbox images with the release in `VERSION`.
+`just up` consumes those tags and refuses a partial local release before
+converging any container. Merely running from a checkout no longer implies a
+build.
+
 ### Install and update are the same command
 
 There is no `portta update-from-the-internet`. Running the installer again
@@ -175,10 +181,11 @@ public once, by hand, in the repository's package settings. Until that happens
 the installer fails at the pull with a clear message rather than falling back to
 a build, which would quietly reintroduce the thing this decision removes.
 
-**Developers get a behaviour change.** `portta web up` inside a checkout now
-pulls the published panel instead of building the local one. `portta web dev`
-is unaffected, and `PORTTA_WEB_BUILD=true` restores the old behaviour for the
-case where you are changing the panel and want `web up` to reflect it.
+**Developers get a behaviour change.** `portta web up` inside a checkout uses
+the published panel unless an image override is explicit. `just build` plus
+`just up` is the production-like local path; `portta web dev` uses source
+mounts and watch. `PORTTA_WEB_BUILD=true` remains an advanced explicit build
+switch, tagged with `VERSION`.
 
 **`npx portta setup` keeps doing what it did.** It provisions a *checkout*, and
 that remains the right tool for working on Portta. It is no longer the way to

@@ -64,6 +64,27 @@ export function initialState() {
       labels: gatewayLabels('web-socket-proxy'),
       upSeconds: 4 * HOUR,
     }),
+    // The database and the ForwardAuth service. A host without them is a host
+    // `doctor` is right to complain about, and the documentation's own
+    // screenshots are of a healthy host rather than of that complaint.
+    makeContainer({
+      id: 'gwdb',
+      name: 'portta-db-1',
+      image: 'postgres:18.6-alpine',
+      health: 'healthy',
+      networks: ['portta-data'],
+      labels: gatewayLabels('db'),
+      upSeconds: 4 * HOUR,
+    }),
+    makeContainer({
+      id: 'gwauth',
+      name: 'portta-portta-auth-1',
+      image: 'fabioassuncao/portta:local',
+      health: 'healthy',
+      networks: ['portta'],
+      labels: gatewayLabels('auth'),
+      upSeconds: 4 * HOUR,
+    }),
 
     // ---- demo-shop: the project being worked on ----------------------
     makeContainer({
@@ -459,6 +480,7 @@ export const NETWORKS = [
   network('portta', { managed: true }),
   network('portta-control', { internal: true, managed: true }),
   network('portta-web', { internal: true, managed: true }),
+  network('portta-data', { internal: true, managed: true }),
   network('portta-access', { managed: true }),
   network('demo-shop_default'),
   network('demo-shop-issue312_default'),

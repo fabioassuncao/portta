@@ -4,7 +4,6 @@ import { pathToFileURL } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import {
   isSupportedHash,
-  parseEnv,
   readProtectionStore,
   renderAuthDynamic,
   renderPanelAuth,
@@ -17,7 +16,6 @@ import {
 } from 'portta-core'
 
 export interface MigrationOptions {
-  envPath: string
   sharesPath: string
   storePath: string
   authDynamicPath: string
@@ -35,49 +33,6 @@ interface LegacyShare {
   service?: string
   container: string
   port: number
-}
-
-function truthy(value: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes((value ?? '').toLowerCase())
-}
-
-function authority(host: string, port: string): string {
-  if (host.includes(':')) return host
-  return port === '80' || port === '443' ? host : `${host}:${port}`
-}
-
-function panelRecord(env: Map<string, string>): Omit<ProtectionRecord, 'epoch'> | null {
-  if (env.get('PORTTA_WEB_AUTH') !== 'basic') return null
-  const user = env.get('PORTTA_WEB_AUTH_USER') ?? ''
-  const hash = env.get('PORTTA_WEB_AUTH_HASH') ?? ''
-  if (!user || !isSupportedHash(hash)) throw new Error('the configured panel credential cannot be migrated')
-  const expose = env.get('PORTTA_WEB_EXPOSE') ?? 'local'
-  if (expose !== 'vpn' && expose !== 'public' && expose !== 'domain') return null
-  if (expose === 'public') {
-    const advertised = env.get('PORTTA_PANEL_ADVERTISED_HOST') || env.get('PORTTA_PUBLIC_IP')
-    if (!advertised) throw new Error('a public panel needs PORTTA_PANEL_ADVERTISED_HOST before authentication can migrate')
-    return {
-      scope: 'panel', host: authority(advertised, env.get('PORTTA_WEB_PORT') ?? '8081'), entryPoints: ['panel'],
-      user, hash, label: 'Portta panel', project: env.get('PORTTA_PROJECT_NAME') ?? 'portta', service: 'web',
-      tech: { id: 'docker', label: 'Portta' },
-    }
-  }
-  // `domain` is the advertised host verbatim, with no port: the entrypoint it
-  // shares with every application already carries one. The Compose router
-  // matches on the same value, and the two must agree or the panel fails
-  // closed. `vpn` derives one from the panel's own hostname instead.
-  const host = expose === 'domain'
-    ? (() => {
-        const advertised = env.get('PORTTA_PANEL_ADVERTISED_HOST')
-        if (!advertised) throw new Error('a panel routed on the domain needs PORTTA_PANEL_ADVERTISED_HOST before authentication can migrate')
-        return advertised
-      })()
-    : `${env.get('PORTTA_WEB_HOST') ?? 'portta-web'}.${env.get('PORTTA_DOMAIN') ?? 'localhost'}`
-  return {
-    scope: 'panel', host, entryPoints: [truthy(env.get('TLS_ENABLED')) ? 'websecure' : 'web'],
-    user, hash, label: 'Portta panel', project: env.get('PORTTA_PROJECT_NAME') ?? 'portta', service: 'web',
-    tech: { id: 'docker', label: 'Portta' },
-  }
 }
 
 function legacyShares(path: string): LegacyShare[] {
@@ -109,15 +64,8 @@ function writePrivateAtomic(path: string, text: string): void {
 }
 
 export function migrateLegacyState(options: MigrationOptions): { migrated: number; protections: number } {
-  const env = parseEnv(existsSync(options.envPath) ? readFileSync(options.envPath, 'utf8') : '')
   let store = readProtectionStore(options.storePath)
   let migrated = 0
-  const panel = panelRecord(env)
-  if (panel) {
-    const result = ensureProtection(store, panel)
-    store = result.store
-    if (result.changed) migrated += 1
-  }
   const shares = legacyShares(options.sharesPath)
   for (const share of shares) {
     if (!share.id || !share.host || !share.entryPoint || !share.container || !Number.isInteger(share.port)) {
@@ -143,7 +91,7 @@ export function migrateLegacyState(options: MigrationOptions): { migrated: numbe
   writePrivateAtomic(options.authDynamicPath, renderAuthDynamic(store))
   if (existsSync(options.sharesPath)) writePrivateAtomic(options.sharesPath, renderShares(shares))
   if (options.panelDynamicPath && existsSync(options.panelDynamicPath)) {
-    writePrivateAtomic(options.panelDynamicPath, renderPanelAuth(null))
+    writePrivateAtomic(options.panelDynamicPath, renderPanelAuth())
   }
   return { migrated, protections: store.protections.length }
 }
@@ -151,7 +99,6 @@ export function migrateLegacyState(options: MigrationOptions): { migrated: numbe
 function main(): void {
   const root = process.env['PORTTA_MIGRATION_ROOT'] ?? '/app/state'
   const result = migrateLegacyState({
-    envPath: process.env['PORTTA_MIGRATION_ENV'] ?? join(root, '.env'),
     sharesPath: process.env['PORTTA_MIGRATION_SHARES'] ?? join(root, 'traefik-dynamic/portta-shares.yaml'),
     storePath: process.env['PORTTA_AUTH_STORE'] ?? join(root, 'auth/protections.json'),
     authDynamicPath: process.env['PORTTA_MIGRATION_AUTH_DYNAMIC'] ?? join(root, 'traefik-dynamic/portta-auth.yaml'),

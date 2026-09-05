@@ -1,505 +1,160 @@
 import { expect, test } from '@playwright/test'
 
+// The panel, driven in a browser against a fake Docker Engine API and a real
+// PostgreSQL. What is asserted here is what only a browser can tell you: that
+// the shell renders, that the pages are reachable, and that the preferences
+// survive a reload.
+//
+// This covers what exists after the move to Next: the Overview, the
+// documentation, and the shell's own controls. The pages for projects, tasks,
+// environments and settings come back with the phases that port them, and
+// their specs come back with them.
+
 const DOCKER_PORT = process.env.PORTTA_E2E_DOCKER_PORT ?? '9911'
 
+// This panel runs with PORTTA_AUTH_MODE=disabled, which is the documented
+// default: on loopback there is nobody to sign in as, and the overview opens
+// straight away. `auth.spec.ts` drives the other mode, on its own panel.
 test.describe('the panel end to end', () => {
   // Every test describes the same host, whatever the previous one did to it.
   test.beforeEach(async ({ request }) => {
     await request.post(`http://127.0.0.1:${DOCKER_PORT}/__reset`)
   })
 
-  test('the overview answers whether the gateway is healthy', async ({ page }) => {
+  test('opens on the overview and says whether the gateway is healthy', async ({ page }) => {
     await page.goto('/')
+    await expect(page).toHaveURL(/\/overview$/)
 
     // The route name is the page's h1 for a screen reader; what a person sees
     // at the top is the host, so the heading is asserted present, not visible.
     await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeAttached()
     await expect(page.getByText('Gateway running')).toBeVisible()
-    // No PostgreSQL in the demo host: the work sections are empty and say so;
-    // the runtime, the gateway and its problems still answer.
-    await expect(page.getByText('No open task')).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Needs attention' })).toBeVisible()
+    await expect(page).toHaveTitle('Overview · Portta')
   })
 
-  test('every section owns its title and project context can refine it', async ({ page }) => {
-    await page.goto('/#/overview')
-
-    const sections = ['Overview', 'Projects', 'Services', 'Docker', 'Network', 'Access', 'Gateway']
-    for (const section of sections) {
-      await page.getByRole('link', { name: section, exact: true }).click()
-      await expect(page).toHaveTitle(`${section} · Portta`)
-    }
-
-    await page.getByRole('link', { name: 'Settings', exact: true }).click()
-    await expect(page).toHaveURL(/#\/settings\/[a-z-]+$/)
-    await expect(page).toHaveTitle(/· Settings · Portta$/)
-
-    await page.goto('/#/environments/alpha')
-    await expect(page).toHaveTitle('alpha · Portta')
+  test('renders the dashboard on the server, before any request from the browser', async ({ page }) => {
+    // JavaScript off: what arrives is what the server rendered. A page that
+    // needed the client to fetch its own API would be blank here.
+    await page.context().addInitScript(() => undefined)
+    const response = await page.request.get('/overview')
+    const html = await response.text()
+    expect(response.status()).toBe(200)
+    expect(html).toContain('Needs attention')
   })
 
-  test('projects explain themselves when the database is not running', async ({ page }) => {
-    await page.goto('/#/workspaces')
-    await expect(page).toHaveURL(/#\/projects$/)
-    await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
-    // No PostgreSQL in the demo host: a decision needs persistence, and the
-    // page says so instead of failing. Environments still list without it.
-    await expect(page.getByText("Projects need the panel's database")).toBeVisible()
-    await expect(page.getByRole('button', { name: 'New project' })).toBeDisabled()
+  test('serves the documentation from the panel, with its navigation', async ({ page }) => {
+    await page.goto('/docs')
+    await expect(page.getByRole('link', { name: 'Portta docs' })).toBeVisible()
+
+    await page.getByRole('link', { name: 'Installing and updating', exact: true }).first().click()
+    await expect(page).toHaveURL(/\/docs\/install$/)
+    await expect(page.getByRole('heading', { level: 1, name: 'Installing and updating' }).first()).toBeVisible()
   })
 
-  test('the old board hash lands on the tasks tab, which explains itself without a database', async ({ page }) => {
-    await page.goto('/#/projects/produto/board')
-    await expect(page).toHaveURL(/#\/projects\/produto\/tasks(\?|$)/)
-    // No PostgreSQL in the demo host: a Project is a decision, and the page
-    // says persistence is what is missing rather than failing.
-    await expect(page.getByRole('main')).toContainText(/database|persistence|No project/)
+  test('finds a page by name from the documentation search', async ({ page }) => {
+    await page.goto('/docs')
+    // The index in docs/README.md is what names a page in the navigation, and
+    // the search reads the same list.
+    await page.getByRole('searchbox', { name: 'Search the documentation' }).fill('persist')
+    await page.getByRole('link', { name: 'Persistence', exact: true }).last().click()
+    await expect(page).toHaveURL(/\/docs\/persistence$/)
   })
 
-  test('a filtered board is a link somebody can paste', async ({ page }) => {
-    await page.goto('/#/projects/produto/board?repository=acme%2Fapi')
-    await expect(page).toHaveURL(/#\/projects\/produto\/tasks\?repository=acme%2Fapi$/)
+  test('remembers the theme across a reload', async ({ page }) => {
+    await page.goto('/overview')
+    await page.getByRole('button', { name: 'Toggle theme' }).click()
+    await page.getByRole('menuitemradio', { name: 'Dark' }).click()
+    await expect(page.locator('html')).toHaveClass(/dark/)
+
     await page.reload()
-    await expect(page).toHaveURL(/repository=acme%2Fapi/)
+    await expect(page.locator('html')).toHaveClass(/dark/)
   })
 
-  test('the favicon is a built local SVG', async ({ request }) => {
-    const response = await request.get('/favicon.svg')
-    expect(response.ok()).toBe(true)
-    expect(response.headers()['content-type']).toContain('image/svg+xml')
-    expect(await response.text()).toContain('<svg')
+  test('remembers the language across a reload, and the server renders it', async ({ page }) => {
+    await page.goto('/overview')
+    await page.getByRole('button', { name: 'Language' }).click()
+    await page.getByRole('menuitemradio', { name: 'Português' }).click()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'pt-BR')
+
+    // The cookie is the point: the *server* renders the next paint, so the
+    // choice has to be somewhere the server can read it.
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'pt-BR')
   })
 
-  test('the sidebar remembers its width without changing mobile navigation', async ({ page }) => {
-    await page.setViewportSize({ width: 1024, height: 768 })
-    await page.goto('/#/overview')
+  test('opens the command palette with the keyboard', async ({ page }) => {
+    await page.goto('/overview')
+    await page.keyboard.press('ControlOrMeta+k')
+    await expect(page.getByPlaceholder('Type a command or search…')).toBeVisible()
 
+    await page.keyboard.press('Escape')
+    await expect(page.getByPlaceholder('Type a command or search…')).toBeHidden()
+  })
+
+  test('collapses the rail and keeps it collapsed', async ({ page }) => {
+    await page.goto('/overview')
     await page.getByRole('button', { name: 'Collapse sidebar' }).click()
-    await expect(page.getByRole('complementary')).toHaveAttribute('data-collapsed', 'true')
-    await expect(page.getByRole('link', { name: 'Projects', exact: true })).toHaveAttribute('title', 'Projects')
+    await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
 
     await page.reload()
     await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeVisible()
-    await expect(page.getByRole('link', { name: 'Overview', exact: true })).toHaveAttribute('aria-current', 'page')
-
-    await page.setViewportSize({ width: 375, height: 700 })
-    await expect(page.getByRole('link', { name: 'Projects', exact: true })).toContainText('Projects')
-    await expect(page.getByRole('button', { name: 'Expand sidebar' })).toBeHidden()
   })
 
-  test('a URL can be copied in one click', async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-    await page.goto('/#/services')
+  test('answers the API on the same origin as the pages', async ({ request }) => {
+    const health = await request.get('/api/health')
+    expect(health.status()).toBe(200)
+    expect(await health.json()).toMatchObject({ ok: true })
 
-    await page.getByRole('button', { name: 'Copy' }).first().click()
-    const copied = await page.evaluate(() => navigator.clipboard.readText())
-    expect(copied).toMatch(/^http:\/\/alpha-/)
+    // One process, one origin: a session cookie set by the pages is the same
+    // cookie the API sees, which is the reason the panel is not two servers.
+    const contract = await request.get('/api/openapi.json')
+    expect(contract.status()).toBe(200)
   })
 
-  test('environments show their services, databases included', async ({ page }) => {
-    await page.goto('/#/environments')
-
-    await expect(page.getByRole('link', { name: 'alpha', exact: true })).toBeVisible()
-    await expect(page.getByRole('row', { name: 'web service' })).toBeVisible()
-    await expect(page.getByRole('row', { name: 'web service' })).toContainText(/alpha-(web|preview)\.localhost/)
-    await expect(page.getByRole('row', { name: 'postgres service' }).first()).toBeVisible()
+  // Set in `next.config.ts`, and only a real response proves they arrive: the
+  // panel can start, stop and remove containers, so nothing may frame it and
+  // nothing may guess at a response's type.
+  test('carries its security headers on a page', async ({ request }) => {
+    const response = await request.get('/overview')
+    const headers = response.headers()
+    expect(headers['x-frame-options']).toBe('DENY')
+    expect(headers['content-security-policy']).toContain("frame-ancestors 'none'")
+    expect(headers['x-content-type-options']).toBe('nosniff')
+    expect(headers['referrer-policy']).toBe('no-referrer')
   })
 
-  test('an environment has a page of its own, with deep-linkable tabs', async ({ page }) => {
-    await page.goto('/#/environments')
-    await page.getByRole('link', { name: 'alpha', exact: true }).click()
-    await expect(page).toHaveURL(/#\/environments\/alpha$/)
-    await expect(page).toHaveTitle('alpha · Portta')
-    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
-
-    await page.getByRole('tab', { name: 'Logs' }).click()
-    await expect(page).toHaveURL(/#\/environments\/alpha\/logs$/)
-    await expect(page).toHaveTitle('Logs · alpha · Portta')
-
-    await page.reload()
-    await expect(page.getByRole('tab', { name: 'Logs' })).toHaveAttribute('aria-selected', 'true')
-    await expect(page.getByRole('link', { name: 'Projects', exact: true })).toHaveAttribute(
-      'aria-current',
-      'page',
-    )
-
-    await page.goBack()
-    await expect(page.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
-
-    await page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: 'Environments' }).click()
-    await expect(page).toHaveURL(/#\/environments$/)
+  test('and never lets the API be cached', async ({ request }) => {
+    const response = await request.get('/api/health')
+    expect(response.headers()['cache-control']).toContain('no-store')
+    expect(response.headers()['x-content-type-options']).toBe('nosniff')
   })
 
-  test('the Logs tab reads every service at once and narrows to one', async ({ page }) => {
-    await page.goto('/#/environments/alpha/logs')
-    const output = page.locator('pre')
-    await expect(output).toBeVisible()
-
-    const origins = await page.locator('pre span').filter({ hasText: '|' }).allTextContents()
-    const services = new Set(origins.map((origin) => origin.replace('|', '').trim()))
-    expect(services.size).toBeGreaterThan(1)
-
-    // `Services` is also a sidebar button, so the selector is exact.
-    const selector = page.getByLabel('Service', { exact: true })
-    await selector.selectOption('web')
-    await expect(page).toHaveURL(/#\/environments\/alpha\/logs\?service=web$/)
-    await expect(selector).toHaveValue('web')
-
-    await page.reload()
-    await expect(page.getByLabel('Service', { exact: true })).toHaveValue('web')
+  test('refuses a /ws path no route claims, rather than leaving the socket open', async ({ request }) => {
+    const response = await request.get('/ws/nothing/here', {
+      headers: { connection: 'Upgrade', upgrade: 'websocket' },
+    })
+    expect(response.status()).toBe(404)
   })
 
-  test('an environment can be named from the panel without a database', async ({ page }) => {
-    await page.goto('/#/environments/alpha/settings')
-    await expect(page.getByText(/Nothing is written inside the project/)).toBeVisible()
-    // No PostgreSQL in the demo host: the form says so rather than pretending.
-    await expect(page.getByText('panel persistence is unavailable')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Save' })).toBeDisabled()
-  })
-
-  test('an unknown environment says so instead of failing', async ({ page }) => {
-    await page.goto('/#/environments/ghost')
-    await expect(page.getByText("No environment 'ghost' is running")).toBeVisible()
-  })
-
-  test('the project page never makes the page scroll sideways', async ({ page }) => {
-    for (const width of [375, 768, 1024, 1440]) {
-      await page.setViewportSize({ width, height: 900 })
-      await page.goto('/#/environments/alpha/services')
-      await expect(page.getByRole('heading', { name: 'alpha' })).toBeVisible()
-      const overflows = await page.evaluate(
-        () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      )
-      expect(overflows, `${width}px viewport`).toBe(false)
-    }
-  })
-
-  test('project service rows never make the page scroll sideways', async ({ page }) => {
-    for (const width of [375, 768, 1024, 1440]) {
-      await page.setViewportSize({ width, height: 900 })
-      await page.goto('/#/projects')
-      await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
-      const overflows = await page.evaluate(
-        () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      )
-      expect(overflows, `${width}px viewport`).toBe(false)
-    }
-  })
-
-  test('the Docker page keeps external containers apart from the projects', async ({ page }) => {
-    await page.goto('/#/docker')
-
-    const external = page.getByRole('table', { name: 'External Docker' })
-    await expect(external.getByText('legacy-postgres')).toBeVisible()
-    await expect(external.getByText('alpha-web-1')).toHaveCount(0)
-
-    await expect(page.getByRole('table', { name: 'Standalone containers' })).toContainText('mailpit')
-    await expect(page.getByRole('table', { name: 'Portta' })).toContainText(
-      'portta-traefik-1',
-    )
-  })
-
-  test('filters and search narrow the list', async ({ page }) => {
-    await page.goto('/#/docker')
-
-    await page.getByLabel('Filter by ownership').selectOption('external')
-    await expect(page.getByRole('table', { name: 'Integrated projects' })).toHaveCount(0)
-    await expect(page.getByRole('table', { name: 'External Docker' })).toBeVisible()
-
-    await page.getByLabel('Filter by ownership').selectOption('all')
-    await page.getByLabel('Search containers').fill('mailpit')
-    await expect(page.getByRole('table', { name: 'Standalone containers' })).toContainText('mailpit')
-    await expect(page.getByRole('table', { name: 'External Docker' })).toHaveCount(0)
-  })
-
-  test('an external container can be stopped and started again', async ({ page }) => {
-    await page.goto('/#/docker')
-
-    const row = () =>
-      page.getByRole('table', { name: 'External Docker' }).getByRole('row', { name: /legacy-postgres/ })
-
-    await row().getByRole('button', { name: /Actions for legacy-postgres/ }).click()
-    await page.getByRole('menuitem', { name: 'Stop', exact: true }).click()
-    await expect(row()).toContainText('exited')
-
-    await row().getByRole('button', { name: /Actions for legacy-postgres/ }).click()
-    await page.getByRole('menuitem', { name: 'Start', exact: true }).click()
-    await expect(row()).toContainText('running')
-  })
-
-  test('logs are readable and filterable', async ({ page }) => {
-    await page.goto('/#/docker')
-
-    await page
-      .getByRole('table', { name: 'External Docker' })
-      .getByRole('row', { name: /legacy-postgres/ })
-      .getByRole('button', { name: 'Logs' })
-      .click()
-    await expect(page.getByText('ready to accept connections')).toBeVisible()
-
-    await page.getByLabel('Filter log lines').fill('warning')
-    await expect(page.getByText('ready to accept connections')).toHaveCount(0)
-    await expect(page.getByText('a warning nobody reads')).toBeVisible()
-  })
-
-  test('removing an external container warns about its volume first', async ({ page }) => {
-    await page.goto('/#/docker')
-
-    await page
-      .getByRole('table', { name: 'External Docker' })
-      .getByRole('row', { name: /legacy-postgres/ })
-      .getByRole('button', { name: /Actions for legacy-postgres/ })
-      .click()
-    await page.getByRole('menuitem', { name: 'Remove container' }).click()
-
-    const dialog = page.getByRole('dialog')
-    await expect(dialog.getByText('Remove this container?')).toBeVisible()
-    await expect(dialog.getByText('legacy_pgdata').first()).toBeVisible()
-    await expect(dialog.getByText(/never removes a volume, and never runs a prune/)).toBeVisible()
-
-    await dialog.getByRole('button', { name: 'Remove container' }).click()
-    await expect(page.getByRole('table', { name: 'External Docker' })).toHaveCount(0)
-
-    // The project it belonged to is untouched.
-    await expect(page.getByRole('table', { name: 'Integrated projects' })).toContainText('alpha-web-1')
-  })
-
-  test('a TCP bridge can be opened from the Access page', async ({ page }) => {
-    await page.goto('/#/access')
-
-    const services = page.getByRole('table', { name: 'TCP services' })
-    await expect(services).toContainText('postgres')
-    await services.getByRole('button', { name: 'Open local access' }).first().click()
-
-    // The bridge shows up with a loopback address to copy, and no error.
-    await expect(page.getByText(/could not open the bridge/)).toHaveCount(0)
-    await expect(page.getByRole('table', { name: 'Open bridges' })).toContainText('127.0.0.1:55432')
-    await expect(page.getByText('postgresql://<user>@127.0.0.1:55432/<database>')).toBeVisible()
-
-    await page.getByRole('button', { name: 'Close' }).first().click()
-    await expect(page.getByText('No bridge is open')).toBeVisible()
-  })
-
-  test('the network page lists the routed hostnames and the shared network', async ({ page }) => {
-    await page.goto('/#/network')
-
-    await expect(page.getByText('alpha-web.localhost')).toBeVisible()
-    await expect(page.getByText('portta', { exact: true }).first()).toBeVisible()
-    await expect(page.getByText('internal').first()).toBeVisible()
-  })
-
-  test('the gateway page runs diagnostics on demand', async ({ page }) => {
-    await page.goto('/#/gateway')
-
-    await page.getByRole('button', { name: 'Run diagnostics' }).click()
-    await expect(page.getByText('Traefik').first()).toBeVisible()
-    await expect(page.getByText('./bin/portta doctor')).toBeVisible()
-  })
-
-  test('settings never reveal a secret', async ({ page }) => {
-    await page.goto('/#/settings/vpn')
-
-    const token = page.getByLabel('Tailscale auth key')
-    await expect(token).toHaveAttribute('type', 'password')
-    await expect(token).toHaveValue('')
-    await expect(page.locator('body')).not.toContainText('fixture-value-never-returned')
-  })
-
-  test('settings groups remain deep-linkable in the mobile navigation strip', async ({ page }) => {
-    await page.setViewportSize({ width: 375, height: 700 })
-    await page.goto('/#/settings/public-access')
-
-    await expect(page).toHaveTitle('Public access · Settings · Portta')
-    await expect(page.getByRole('link', { name: 'Public access' })).toHaveAttribute(
-      'aria-current',
-      'page',
-    )
-    const nav = page.getByRole('navigation', { name: 'Settings groups' })
-    expect(await nav.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true)
-    expect(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
-      ),
-    ).toBe(false)
-  })
-
-  test('settings keep one draft while moving between deep-linked groups', async ({ page, request }) => {
-    try {
-      // The base domain moved out of Gateway when it became a mode of its own
-      // (ADR 0022); it is the `custom` value now, in its own group. The
-      // behaviour under test is unchanged: a draft in one group survives while
-      // another is edited, and Save sends both.
-      await page.goto('/#/settings/project-domain')
-      await expect(page).toHaveTitle('Project domain · Settings · Portta')
-      await page.getByLabel('Custom domain').fill('e2e.localhost')
-
-      await page.getByRole('link', { name: 'TLS' }).click()
-      await expect(page).toHaveURL(/#\/settings\/tls$/)
-      await page.getByLabel('HTTPS').click()
-      await expect(page.getByRole('link', { name: 'Project domain, 1 unsaved' })).toBeVisible()
-      await expect(page.getByText('2 unsaved')).toBeVisible()
-
-      const patch = page.waitForRequest(
-        (candidate) => candidate.url().endsWith('/api/config') && candidate.method() === 'PATCH',
-      )
-      await page.getByRole('button', { name: 'Save' }).click()
-      expect((await patch).postDataJSON()).toEqual({
-        values: { PORTTA_DOMAIN: 'e2e.localhost', TLS_ENABLED: 'true' },
-      })
-
-      await page.getByRole('link', { name: 'Project domain' }).click()
-      await expect(page.getByLabel('Custom domain')).toHaveValue('e2e.localhost')
-      await page.reload()
-      await expect(page.getByLabel('Custom domain')).toHaveValue('e2e.localhost')
-    } finally {
-      await request.patch('/api/config', {
-        data: { values: { PORTTA_DOMAIN: 'localhost', TLS_ENABLED: 'false' } },
-      })
-    }
-  })
-
-  test('a saved setting can be applied from the panel', async ({ page, request }) => {
-    try {
-      // Save something the running panel disagrees with. `pending` is exactly
-      // that comparison: the .env value against the process environment.
-      await request.patch('/api/config', { data: { values: { PORTTA_DOMAIN: 'e2e.localhost' } } })
-
-      await page.goto('/#/overview')
-      await expect(page.getByText('Saved settings are not running yet.')).toBeVisible()
-
-      // The panel is about to become unreachable, which is what applying looks
-      // like from a browser. Aborting the probe reproduces that exactly, and
-      // without stopping the server the rest of the suite needs.
-      await page.route('**/api/health', (route) => route.abort())
-
-      await page.getByRole('button', { name: 'Apply and restart' }).click()
-      await expect(page.getByText(/projects are not touched/)).toBeVisible()
-      await page.getByRole('button', { name: 'Apply and restart' }).click()
-
-      await expect(page.getByText('Do not close this tab. The panel comes back on its own.')).toBeVisible()
-      await expect(page.getByText('Panel went offline')).toBeVisible({ timeout: 15_000 })
-
-      // The applier finishes, and the effect lands: .env agrees with the
-      // environment the panel is running with again.
-      // The response matters: `__finish-apply` 404s when the applier does not
-      // exist yet, and ignoring that turns a race into a twenty-second wait
-      // with no explanation.
-      expect((await request.post(`http://127.0.0.1:${DOCKER_PORT}/__finish-apply?code=0`)).ok()).toBe(true)
-      await request.patch('/api/config', { data: { values: { PORTTA_DOMAIN: 'localhost' } } })
-      await page.unroute('**/api/health')
-
-      // The panel gives itself 240s to come back (BUDGET_MS in use-apply.ts), so
-      // asserting 20s was stricter than the contract and went flaky in the full
-      // suite -- reproducible in neither isolation, CPU load, nor suite order.
-      // Rather than raise the number and move on, report what the panel
-      // actually thought: `pendingRestart` still true means some *other*
-      // setting disagrees with the process environment, which would be a
-      // leaked write from an earlier test rather than a slow one.
-      try {
-        await expect(page.getByText(/The saved settings are running/)).toBeVisible({ timeout: 60_000 })
-      } catch (cause) {
-        const status = await (await request.get('/api/status')).json() as {
-          settings?: { pendingRestart?: boolean; pending?: string[] }
-          apply?: { state?: string }
+  test('streams an environment log over a websocket', async ({ page }) => {
+    await page.goto('/overview')
+    // From the page, so the handshake carries whatever a browser would carry.
+    const received = await page.evaluate(async () => {
+      const socket = new WebSocket(`ws://${location.host}/ws/environments/alpha/logs?service=web&tail=10`)
+      return await new Promise<string[]>((resolve, reject) => {
+        const messages: string[] = []
+        socket.onmessage = (event) => {
+          messages.push(String(event.data))
+          if (messages.length >= 1) {
+            socket.close()
+            resolve(messages)
+          }
         }
-        throw new Error(
-          `the panel never reported the saved settings as running. pendingRestart=${status.settings?.pendingRestart} ` +
-          `pending=${JSON.stringify(status.settings?.pending)} apply=${status.apply?.state}`,
-          { cause },
-        )
-      }
-    } finally {
-      await request.patch('/api/config', { data: { values: { PORTTA_DOMAIN: 'localhost' } } })
-      await request.post(`http://127.0.0.1:${DOCKER_PORT}/__reset`)
-    }
-  })
-
-  test('a failed apply shows the exit code and the host command', async ({ page, request }) => {
-    try {
-      await request.patch('/api/config', { data: { values: { PORTTA_DOMAIN: 'e2e.localhost' } } })
-      await page.goto('/#/overview')
-
-      await page.getByRole('button', { name: 'Apply and restart' }).click()
-      await page.getByRole('button', { name: 'Apply and restart' }).click()
-
-      // Finishing the applier before the panel has started it is a race the
-      // fake docker loses silently: `__finish-apply` 404s on a container that
-      // does not exist yet, the test ignores the response, and the applier
-      // never exits. This phase is only rendered once the poll has *seen* it
-      // running, which is exactly the point after which finishing it means
-      // something.
-      await expect(page.getByText('Recreating the gateway containers…')).toBeVisible()
-      expect((await request.post(`http://127.0.0.1:${DOCKER_PORT}/__finish-apply?code=2`)).ok()).toBe(true)
-
-      await expect(page.getByText(/exited with code 2/)).toBeVisible({ timeout: 20_000 })
-      await expect(page.getByText('./bin/portta up local')).toBeVisible()
-    } finally {
-      await request.patch('/api/config', { data: { values: { PORTTA_DOMAIN: 'localhost' } } })
-      await request.post(`http://127.0.0.1:${DOCKER_PORT}/__reset`)
-    }
-  })
-
-  test('the documentation site navigates, searches and links out', async ({ page }) => {
-    await page.goto('/docs/')
-
-    // The front door is the README, and the sidebar is the index docs/README.md
-    // already maintains.
-    await expect(page.getByRole('heading', { name: 'Portta', level: 1 })).toBeVisible()
-    await page.getByRole('navigation').getByRole('link', { name: 'Architecture', exact: true }).click()
-    await expect(page.getByRole('heading', { name: 'Architecture', level: 1 })).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Components', level: 2 })).toBeVisible()
-
-    // An internal link resolves inside the site rather than reaching GitHub.
-    await page.getByRole('link', { name: 'Monorepo layout' }).first().click()
-    await expect(page.getByRole('heading', { name: 'Monorepo layout', level: 1 })).toBeVisible()
-
-    await page.getByLabel('Search the documentation').fill('tailscale')
-    await expect(page.getByRole('link', { name: /Tailscale.*Running remotely/ }).first()).toBeVisible()
-  })
-
-  test('the API reference renders the live contract and tries a GET', async ({ page }) => {
-    // The old path is kept as a redirect, so a bookmark still works.
-    await page.goto('/api/docs')
-    await expect(page).toHaveURL(/\/docs\/#\/api$/)
-
-    await expect(page.getByRole('heading', { name: 'Portta panel API' })).toBeVisible()
-    await page.getByLabel('Filter operations').fill('health')
-    const operation = page.locator('details').filter({ hasText: '/health' }).first()
-    await operation.locator(':scope > summary').click()
-    await operation.getByRole('button', { name: 'Try GET' }).click()
-    await expect(operation.getByText('200 OK')).toBeVisible()
-    await expect(operation.locator('pre').first()).toContainText('panelVersion')
-  })
-
-  test('a write in the console needs an explicit confirmation', async ({ page }) => {
-    await page.goto('/docs/#/api')
-    await page.getByLabel('Filter operations').fill('projects')
-    const operation = page.locator('details').filter({ hasText: 'POST' }).first()
-    await operation.locator(':scope > summary').click()
-
-    // Nothing is sent by the first click: a write says what it is about to do.
-    await operation.getByRole('button', { name: 'Try POST' }).click()
-    await expect(operation.getByText(/sends a real POST/)).toBeVisible()
-    await expect(operation.getByRole('button', { name: 'Send it' })).toBeVisible()
-    await operation.getByRole('button', { name: 'Cancel' }).click()
-    await expect(operation.getByRole('button', { name: 'Try POST' })).toBeVisible()
-  })
-
-  test('the panel links to the documentation, in a new tab', async ({ page }) => {
-    await page.goto('/')
-    const link = page.getByRole('link', { name: 'Documentation' })
-    await expect(link).toHaveAttribute('href', '/docs/')
-    await expect(link).toHaveAttribute('target', '_blank')
-  })
-
-  test('the theme can be switched', async ({ page }) => {
-    await page.goto('/')
-    const html = page.locator('html')
-    const before = await html.getAttribute('class')
-
-    // The theme is a menu of three: light, dark and system.
-    await page.getByRole('button', { name: 'Toggle theme' }).click()
-    await page.getByRole('menuitemradio', { name: before?.includes('dark') ? 'Light' : 'Dark' }).click()
-    await expect(html).not.toHaveAttribute('class', before ?? '')
+        socket.onerror = () => reject(new Error('the socket refused the handshake'))
+        setTimeout(() => resolve(messages), 5_000)
+      })
+    })
+    expect(received.length).toBeGreaterThan(0)
+    expect(JSON.parse(received[0]!)).toMatchObject({ kind: 'open', environment: 'alpha' })
   })
 })

@@ -2,7 +2,8 @@
 // (apps/web/src/server/core/apply.ts), so the codes and wording are contract,
 // not just a warning printed on a terminal. See ADR 0026.
 import { describe, it, expect } from 'vitest'
-import { applyRefusal, applyCreateArguments, applySpec, APPLY_IMAGE } from './apply.ts'
+import { applyRefusal, applyCreateArguments, applySpec } from './apply.ts'
+import { porttaImages } from './images.ts'
 
 describe('applyRefusal', () => {
   it('serves a plain local host', () => {
@@ -32,7 +33,7 @@ describe('applyRefusal', () => {
 })
 
 describe('the container it would create', () => {
-  const args = applyCreateArguments('/opt/portta', applySpec('/opt/portta', '0.3.0'))
+  const args = applyCreateArguments('/opt/portta', applySpec('/opt/portta', '0.3.0'), '0.3.0')
 
   it('takes no network, so it cannot be a pivot', () => {
     expect(args).toContain('--network')
@@ -46,6 +47,6 @@ describe('the container it would create', () => {
   // The spec label is what makes `up` replace an applier built for an older
   // image; without the image in it, a host would keep a stale one forever.
   it('records the image in its spec, so a new image supersedes the old', () => {
-    expect(applySpec('/opt/portta', '0.3.0')).toContain(APPLY_IMAGE)
+    expect(applySpec('/opt/portta', '0.3.0')).toContain(porttaImages('0.3.0').apply)
   })
 })

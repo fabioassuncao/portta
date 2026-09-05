@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
-import { renderWithQuery } from './render.tsx'
+import { principal, renderWithQuery } from './render.tsx'
+import { navigation } from './setup.ts'
 import { makeRepository, makeRepositoryGit } from './fixtures.ts'
 
 class ApiError extends Error {
@@ -22,7 +23,7 @@ const repositoryEnvironments = vi.fn()
 const deleteRepository = vi.fn()
 const project = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api', () => ({
   ApiError,
   api: {
     repository: (id: string) => repository(id),
@@ -35,7 +36,20 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { RepositoryPage, resolveRepositoryTab } = await import('../../src/ui/pages/Repository.tsx')
+const { RepositoryPageView, resolveRepositoryTab } = await import('@/components/entities/repository-page-view')
+
+/** The page's server half read the repository and the project it belongs to. */
+function view(tab: string | null = null, overrides: { repository?: unknown } = {}) {
+  return (
+    <RepositoryPageView
+      slug="shop"
+      projectId="1"
+      projectName="Shop"
+      initialRepository={(overrides.repository ?? makeRepository()) as never}
+      tab={tab}
+    />
+  )
+}
 
 beforeEach(() => {
   const git = makeRepositoryGit()
@@ -46,7 +60,7 @@ beforeEach(() => {
   repositoryEnvironments.mockReset().mockResolvedValue([{ environment: 'alpha', running: true, serviceCount: 2, runningCount: 2, unhealthyCount: 0, urls: [{ url: 'http://alpha-web.localhost', host: 'alpha-web.localhost', scope: 'local', scheme: 'http' }] }])
   deleteRepository.mockReset().mockResolvedValue({ ok: true, removed: 'r1', note: '' })
   project.mockReset().mockResolvedValue({ slug: 'shop', name: 'Shop', repositories: [], environments: [] })
-  window.location.hash = '/projects/shop/repositories/r1'
+  navigation.push.mockReset()
 })
 
 describe('the Repository page', () => {
@@ -57,38 +71,37 @@ describe('the Repository page', () => {
   })
 
   it('shows what is checked out, the pull requests and the environments', async () => {
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab={null} />)
+    renderWithQuery(view())
     expect(await screen.findByRole('heading', { name: 'api' })).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: 'main' })).toHaveAttribute('href', 'https://github.com/acme/api/tree/main')
     expect(screen.getByText('7 uncommitted changes')).toBeInTheDocument()
     expect(screen.getByText('./bin/portta repos scan --path /srv/projects/shop/api')).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: '#61 Add invoice totals' })).toHaveAttribute('href', 'https://github.com/acme/api/pull/61')
     expect(screen.getByText('review requested')).toBeInTheDocument()
-    expect(await screen.findByRole('link', { name: 'alpha' })).toHaveAttribute('href', '#/environments/alpha')
+    expect(await screen.findByRole('link', { name: 'alpha' })).toHaveAttribute('href', '/environments/alpha')
     expect(screen.getByText('AGENTS.md')).toBeInTheDocument()
   })
 
   it('walks Projects, the project and Repositories in the breadcrumb instead of a back button', async () => {
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab={null} />)
+    renderWithQuery(view())
     await screen.findByRole('heading', { name: 'api' })
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' })
-    expect(within(nav).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '#/projects')
-    expect(await within(nav).findByRole('link', { name: 'Shop' })).toHaveAttribute('href', '#/projects/shop')
-    expect(within(nav).getByRole('link', { name: 'Repositories' })).toHaveAttribute('href', '#/projects/shop/repositories')
+    expect(within(nav).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects')
+    expect(await within(nav).findByRole('link', { name: 'Shop' })).toHaveAttribute('href', '/projects/shop')
+    expect(within(nav).getByRole('link', { name: 'Repositories' })).toHaveAttribute('href', '/projects/shop/repositories')
     expect(within(nav).getByText('api')).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('button', { name: 'Back to the project' })).toBeNull()
-    await waitFor(() => expect(document.title).toBe('api · Shop · Portta'))
   })
 
   it('lists the recent commits with the sha linked', async () => {
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab="commits" />)
+    renderWithQuery(view('commits'))
     expect(await screen.findByText('Add invoice totals')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '9f2c1ab' })).toHaveAttribute('href', 'https://github.com/acme/api/commit/9f2c1abfeed')
     expect(screen.getByText('Start invoices')).toBeInTheDocument()
   })
 
   it('shows the instruction files and the content of the selected one', async () => {
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab="instructions" />)
+    renderWithQuery(view('instructions'))
     expect(await screen.findByLabelText('AGENTS.md')).toHaveTextContent('Never prune.')
     expect(screen.getByText('uncommitted')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /style\.mdc/ }))
@@ -96,35 +109,39 @@ describe('the Repository page', () => {
   })
 
   it('makes every tab a link under the project', async () => {
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab={null} />)
+    renderWithQuery(view())
     const tabs = await screen.findAllByRole('tab')
     expect(tabs.map((tab) => tab.getAttribute('href'))).toEqual([
-      '#/projects/shop/repositories/r1/overview',
-      '#/projects/shop/repositories/r1/commits',
-      '#/projects/shop/repositories/r1/instructions',
+      '/projects/shop/repositories/r1',
+      '/projects/shop/repositories/r1/commits',
+      '/projects/shop/repositories/r1/instructions',
     ])
   })
 
   it('says when the host has not scanned it yet', async () => {
     repositoryGit.mockResolvedValue(makeRepositoryGit({ collected: false, git: null, remote: null, forge: null, commits: [], instructions: [] }))
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab={null} />)
+    renderWithQuery(view())
     expect(await screen.findByText(/has not been scanned yet/)).toBeInTheDocument()
   })
 
   it('unregisters after a confirmation and goes back to the project', async () => {
-    renderWithQuery(<RepositoryPage slug="shop" id="r1" tab={null} />)
+    renderWithQuery(view())
     await screen.findByRole('heading', { name: 'api' })
     await userEvent.click(screen.getByRole('button', { name: 'Unregister' }))
     const dialog = await screen.findByRole('dialog')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Unregister' }))
     await waitFor(() => expect(deleteRepository).toHaveBeenCalledWith('r1'))
-    await waitFor(() => expect(window.location.hash).toBe('#/projects/shop'))
+    await waitFor(() => expect(navigation.push).toHaveBeenCalledWith('/projects/shop'))
   })
 
-  it('reports a repository that does not exist with a way back', async () => {
-    repository.mockRejectedValue(new ApiError(404, "no repository 'nope'"))
-    renderWithQuery(<RepositoryPage slug="shop" id="nope" tab={null} />)
-    expect(await screen.findByText("No repository 'nope'")).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Back to the project' })).toHaveAttribute('href', '#/projects/shop')
+})
+
+describe('what a role is shown', () => {
+  // Unregistering a repository is a write on the Project. A viewer, and a
+  // developer who is not in it, are offered nothing to click.
+  it('offers no unregister to somebody who may not manage repositories', async () => {
+    renderWithQuery(view(), undefined, principal({ role: 'viewer', permissions: ['repository:read'] }))
+    await screen.findByRole('heading', { name: 'api' })
+    expect(screen.queryByRole('button', { name: 'Unregister' })).not.toBeInTheDocument()
   })
 })

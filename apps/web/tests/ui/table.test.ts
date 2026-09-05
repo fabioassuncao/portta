@@ -8,7 +8,7 @@ import {
   toggleHidden,
   visibleColumns,
   type Column,
-} from '../../src/ui/lib/table.ts'
+} from '@/lib/table'
 
 interface Row {
   id: string

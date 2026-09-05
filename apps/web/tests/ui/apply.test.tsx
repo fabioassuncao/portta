@@ -2,12 +2,13 @@ import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
-import type { ApplyStatus } from '../../src/shared/types.ts'
+import type { ApplyStatus } from 'portta-contracts'
 
 const applyStatus = vi.fn()
 const applyProbe = vi.fn()
 const healthProbe = vi.fn()
 const apply = vi.fn()
+const discardConfig = vi.fn()
 
 class ApiError extends Error {
   status: number
@@ -18,17 +19,30 @@ class ApiError extends Error {
   }
 }
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError,
   api: {
     applyStatus: () => applyStatus(),
     applyProbe: (signal: AbortSignal) => applyProbe(signal),
     healthProbe: (signal: AbortSignal) => healthProbe(signal),
     apply: () => apply(),
+    discardConfig: (...args: unknown[]) => discardConfig(...args),
   },
 }))
 
-const { ApplyBar } = await import('../../src/ui/components/apply-bar.tsx')
+const { ApplyBar } = await import('@/components/apply-bar')
+
+const DOMAIN_CHANGE = {
+  key: 'PORTTA_DOMAIN',
+  label: 'Domain',
+  group: 'Project domain',
+  from: 'localhost',
+  to: 'dev.test',
+  secret: false,
+  fromSet: true,
+  toSet: true,
+  restartRequired: true,
+}
 
 const IDLE: ApplyStatus = {
   state: 'idle',
@@ -41,19 +55,34 @@ const IDLE: ApplyStatus = {
   exitCode: null,
   pendingRestart: true,
   pendingKeys: ['PORTTA_DOMAIN'],
+  pendingChanges: [DOMAIN_CHANGE],
   movesPanel: false,
   logTail: [],
   profile: 'local',
   applyCommand: './bin/portta up local',
 }
 
-const SETTLED: ApplyStatus = { ...IDLE, state: 'ok', pendingRestart: false, pendingKeys: [], exitCode: 0 }
+const SETTLED: ApplyStatus = {
+  ...IDLE,
+  state: 'ok',
+  pendingRestart: false,
+  pendingKeys: [],
+  pendingChanges: [],
+  exitCode: 0,
+}
 
 beforeEach(() => {
   applyStatus.mockReset().mockResolvedValue(IDLE)
   applyProbe.mockReset().mockResolvedValue(SETTLED)
   healthProbe.mockReset().mockResolvedValue({ ok: true, panelVersion: '0.1.0', gatewayVersion: '0.3.0' })
   apply.mockReset().mockResolvedValue({ ok: true, startedAt: 1, note: '', applyCommand: './bin/portta up local' })
+  discardConfig.mockReset().mockResolvedValue({
+    ok: true,
+    discarded: ['PORTTA_DOMAIN'],
+    pendingRestart: false,
+    applyCommand: './bin/portta up local',
+    view: null,
+  })
 })
 
 afterEach(() => {
@@ -83,13 +112,13 @@ async function startApplying(): Promise<void> {
   vi.useFakeTimers()
   renderWithQuery(<ApplyBar readOnly={false} />)
   await tick(10)
-  await click('Apply and restart')
-  await click('Apply and restart')
+  await click('Apply')
+  await click('Apply')
 }
 
 describe('the pending bar', () => {
   it('says nothing when the running gateway agrees with what is saved', async () => {
-    applyStatus.mockResolvedValue({ ...IDLE, pendingRestart: false, pendingKeys: [] })
+    applyStatus.mockResolvedValue({ ...IDLE, pendingRestart: false, pendingKeys: [], pendingChanges: [] })
     renderWithQuery(<ApplyBar readOnly={false} />)
     await waitFor(() => expect(applyStatus).toHaveBeenCalled())
     expect(screen.queryByRole('status')).not.toBeInTheDocument()
@@ -97,7 +126,9 @@ describe('the pending bar', () => {
 
   it('offers the button when the host has an applier', async () => {
     renderWithQuery(<ApplyBar readOnly={false} />)
-    expect(await screen.findByRole('button', { name: 'Apply and restart' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Apply' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Review' })).toBeInTheDocument()
+    expect(screen.getByText(/1 saved setting is not running yet/)).toBeInTheDocument()
   })
 
   it('falls back to the host command when the host has no applier', async () => {
@@ -110,7 +141,7 @@ describe('the pending bar', () => {
     })
     renderWithQuery(<ApplyBar readOnly={false} />)
     expect(await screen.findByText('./bin/portta up local')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Apply and restart' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
     expect(screen.getByText(/Set PORTTA_APPLY=true/)).toBeInTheDocument()
   })
 
@@ -145,16 +176,18 @@ describe('the pending bar', () => {
   it('offers no button in read-only mode, only the command', async () => {
     renderWithQuery(<ApplyBar readOnly />)
     expect(await screen.findByText('./bin/portta up local')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Apply and restart' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument()
   })
 })
 
 describe('the confirmation', () => {
   it('names what is pending, and does not apply until confirmed', async () => {
     renderWithQuery(<ApplyBar readOnly={false} />)
-    await userEvent.click(await screen.findByRole('button', { name: 'Apply and restart' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Review' }))
 
-    expect(screen.getByText('PORTTA_DOMAIN')).toBeInTheDocument()
+    expect(screen.getByText('Your domain')).toBeInTheDocument()
+    expect(screen.getByText('localhost')).toBeInTheDocument()
+    expect(screen.getByText('dev.test')).toBeInTheDocument()
     expect(screen.getByText(/goes offline for a few seconds/)).toBeInTheDocument()
     expect(screen.getByText(/projects are not touched/)).toBeInTheDocument()
 
@@ -162,10 +195,29 @@ describe('the confirmation', () => {
     expect(apply).not.toHaveBeenCalled()
   })
 
-  it('warns when the panel is about to move, because this tab will not come back', async () => {
-    applyStatus.mockResolvedValue({ ...IDLE, movesPanel: true, pendingKeys: ['PORTTA_WEB_PORT'] })
+  it('discards a pending change without applying', async () => {
     renderWithQuery(<ApplyBar readOnly={false} />)
-    await userEvent.click(await screen.findByRole('button', { name: 'Apply and restart' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Review' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Discard all' }))
+    expect(discardConfig).toHaveBeenCalledWith(undefined)
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('warns when the panel is about to move, because this tab will not come back', async () => {
+    applyStatus.mockResolvedValue({
+      ...IDLE,
+      movesPanel: true,
+      pendingKeys: ['PORTTA_WEB_PORT'],
+      pendingChanges: [{
+        ...DOMAIN_CHANGE,
+        key: 'PORTTA_WEB_PORT',
+        label: 'Port',
+        from: '8081',
+        to: '9090',
+      }],
+    })
+    renderWithQuery(<ApplyBar readOnly={false} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Apply' }))
     expect(screen.getByText(/will not reconnect on its own/)).toBeInTheDocument()
   })
 })
@@ -173,8 +225,8 @@ describe('the confirmation', () => {
 describe('applying', () => {
   it('cannot be dismissed while it runs', async () => {
     renderWithQuery(<ApplyBar readOnly={false} />)
-    await userEvent.click(await screen.findByRole('button', { name: 'Apply and restart' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Apply and restart' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Apply' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }))
 
     await screen.findByText('Do not close this tab. The panel comes back on its own.')
     expect(screen.queryByRole('button', { name: 'Close' })).not.toBeInTheDocument()

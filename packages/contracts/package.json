@@ -1,0 +1,40 @@
+{
+  "name": "portta-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The panel's API contract: schemas, types and the generated OpenAPI document",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "development": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./openapi.json": "./openapi.json"
+  },
+  "files": [
+    "dist",
+    "openapi.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "openapi": "node --conditions=development scripts/generate-openapi.ts",
+    "openapi:check": "node --conditions=development scripts/generate-openapi.ts --check"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "portta-core": "0.1.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "portta-server": "0.1.0",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}

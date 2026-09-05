@@ -64,52 +64,10 @@ fi
 ok "Docker Compose $compose_version"
 
 step "3/8  Configuration"
-if [ -f "$PORTTA_ROOT/.env" ]; then
-  ok ".env found"
-  # `cp .env.example .env` inherits the umask, so the documented quick start
-  # leaves a world-readable file that will grow secrets. Tightening the
-  # permissions of the gateway's own configuration file is never destructive,
-  # so do it and say so rather than only warning.
-  env_mode=$(ls -l "$PORTTA_ROOT/.env" | cut -c1-10)
-  case "$env_mode" in
-    -rw-------) ;;
-    *)
-      chmod 600 "$PORTTA_ROOT/.env" \
-        && ok "tightened .env permissions from $env_mode to -rw------- (it may hold secrets)"
-      ;;
-  esac
-else
-  warn "no .env file; the gateway will run on built-in defaults"
-  if portta_confirm "Create .env from .env.example now?"; then
-    cp "$PORTTA_ROOT/.env.example" "$PORTTA_ROOT/.env"
-    # .env may grow secrets (auth keys, API tokens); keep it owner-only.
-    chmod 600 "$PORTTA_ROOT/.env"
-    ok "created .env (edit it before enabling remote or public profiles)"
-    portta_load_env
-    portta_defaults
-  else
-    hint "cp .env.example .env"
-  fi
-fi
-
-# Re-resolve after a possible .env creation.
-if [ -f "$PORTTA_ROOT/.env" ] && [ -z "${PORTTA_RUNTIME_DB_PASSWORD:-}" ]; then
-  portta_env_set PORTTA_RUNTIME_DB_PASSWORD "$(portta_random_hex 32)"
-  ok "generated the panel database credential in .env"
-fi
-if [ -f "$PORTTA_ROOT/.env" ] && [ -z "${PORTTA_AUTH_SECRET:-}" ]; then
-  portta_env_set PORTTA_AUTH_SECRET "$(portta_random_hex 32)"
-  ok "generated the authentication signing secret in .env"
-fi
-
-# The panel writes .env from its Settings page, and .env is owner-only, so the
-# container has to run as whoever owns it. The installer records this; a
-# checkout had nothing that did, and the panel fell back to the image's `node`
-# (uid 1000) and could not write a file owned by anyone else.
-if [ -f "$PORTTA_ROOT/.env" ] && [ -z "${PORTTA_WEB_USER:-}" ]; then
-  portta_env_set PORTTA_WEB_USER "$(id -u):$(id -g)"
-  ok "the panel will run as $(id -u):$(id -g), so it can write .env"
-fi
+portta_prepare_env || die "environment preparation failed"
+portta_load_env || die "invalid environment"
+portta_defaults
+ok "environment prepared from .env.example"
 
 portta_resolve_profile "$PORTTA_PROFILE" || exit 1
 info "profile: $PORTTA_PROFILE, domain: $PORTTA_DOMAIN"

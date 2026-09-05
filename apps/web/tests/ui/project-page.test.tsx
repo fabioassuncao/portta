@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
-import { renderWithQuery } from './render.tsx'
+import { principal, renderWithQuery } from './render.tsx'
+import { navigation } from './setup.ts'
 import { makeEvent, makeRepository, makeSession, makeTaskSummary } from './fixtures.ts'
-import type { Project } from '../../src/shared/types.ts'
+import type { Project } from 'portta-contracts'
 
 class ApiError extends Error {
   status: number
@@ -32,7 +33,7 @@ const metricsCurrent = vi.fn()
 const setTaskStatus = vi.fn()
 const setProjectEnvironments = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api', () => ({
   ApiError,
   api: {
     project: (slug: string) => project(slug),
@@ -45,6 +46,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
     environments: () => environments(),
     environmentGit: () => Promise.resolve(null),
     tasks: (slug: string, filters: unknown) => tasks(slug, filters),
+    allTasks: (filters: unknown) => tasks('*', filters),
     nextTask: (slug: string) => nextTask(slug),
     sessions: (slug: string, filters: unknown) => sessions(slug, filters),
     projectActivity: (slug: string, filters: unknown) => projectActivity(slug, filters),
@@ -55,7 +57,12 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { ProjectPage } = await import('../../src/ui/pages/Project.tsx')
+const { ProjectHeader } = await import('@/components/projects/project-header')
+const { ProjectTabs } = await import('@/components/projects/project-tabs')
+const { ProjectOverview } = await import('@/components/projects/project-overview')
+const { RepositoriesTab } = await import('@/components/projects/repositories-tab')
+const { SettingsTab } = await import('@/components/projects/settings-tab')
+const { TasksTabView } = await import('../../app/(panel)/projects/[slug]/tasks/tasks-tab-view.tsx')
 
 const detail: Project = {
   id: 'ws-1',
@@ -73,6 +80,12 @@ const detail: Project = {
   ],
 }
 
+const TASKS = [
+  makeTaskSummary({ id: '42', project: 'meu-produto', status: 'in_progress', agent: 'claude-code', assignee: null }),
+  makeTaskSummary({ id: '7', project: 'meu-produto', title: 'Corrigir fila', status: 'blocked' }),
+  makeTaskSummary({ id: '8', project: 'meu-produto', title: 'Escrever docs', status: 'ready' }),
+]
+
 beforeEach(() => {
   project.mockReset().mockResolvedValue(detail)
   deleteProject.mockReset().mockResolvedValue({ ok: true, removed: 'meu-produto', note: '' })
@@ -85,72 +98,81 @@ beforeEach(() => {
   deleteRepository.mockReset().mockResolvedValue({ ok: true, removed: 'r1', note: '' })
   discoveredRepositories.mockReset().mockResolvedValue([{ key: 'abcdef012345', path: '/srv/projects/shop/web', name: 'web', remote: null, location: 'managed', relativePath: 'shop/web', environments: ['alpha'] }])
   environments.mockReset().mockResolvedValue([])
-  tasks.mockReset().mockResolvedValue([
-    makeTaskSummary({ id: '42', project: 'meu-produto', status: 'in_progress', agent: 'claude-code', assignee: null }),
-    makeTaskSummary({ id: '7', project: 'meu-produto', title: 'Corrigir fila', status: 'blocked' }),
-    makeTaskSummary({ id: '8', project: 'meu-produto', title: 'Escrever docs', status: 'ready' }),
-  ])
+  tasks.mockReset().mockResolvedValue(TASKS)
   nextTask.mockReset().mockResolvedValue(makeTaskSummary({ id: '8', project: 'meu-produto', title: 'Escrever docs', status: 'ready' }))
   sessions.mockReset().mockResolvedValue([makeSession({ project: 'meu-produto' })])
   projectActivity.mockReset().mockResolvedValue({ events: [makeEvent({ project: 'meu-produto' })], nextBefore: null })
   metricsCurrent.mockReset().mockResolvedValue({ version: 1, instance: { id: 'i', name: 'lab', hostname: 'lab' }, collectedAt: null, ageSeconds: null, stale: true, collectorActive: false, host: null, runtime: null, projects: [] })
   setTaskStatus.mockReset().mockResolvedValue({})
   setProjectEnvironments.mockReset().mockResolvedValue(detail)
-  window.location.hash = '/projects/meu-produto'
+  navigation.push.mockReset()
+  navigation.pathname = '/projects/meu-produto'
+  navigation.search = ''
 })
+
+function overview() {
+  return (
+    <ProjectOverview
+      project={detail}
+      readOnly={false}
+      initialTasks={TASKS}
+      initialSessions={[makeSession({ project: 'meu-produto' })] as never}
+      initialActivity={[makeEvent({ project: 'meu-produto' })] as never}
+    />
+  )
+}
 
 describe('the project cockpit', () => {
   it('answers what is being done, by whom, and what is next', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" />)
-    expect(await screen.findByRole('heading', { name: 'Meu Produto' })).toBeInTheDocument()
+    renderWithQuery(overview())
     expect(await screen.findByRole('group', { name: '#42 Implementar refresh token' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: '#7 Corrigir fila' })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: '#8 Escrever docs' })).toHaveAttribute('href', '#/projects/meu-produto/tasks/8')
+    expect(await screen.findByRole('link', { name: '#8 Escrever docs' })).toHaveAttribute('href', '/projects/meu-produto/tasks/8')
     expect(screen.getByRole('group', { name: 'claude session' })).toBeInTheDocument()
     expect(screen.getByText('#42 moved to in progress')).toBeInTheDocument()
   })
 
   it('sits under Projects in the breadcrumb, with the project as the current item', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" />)
+    renderWithQuery(<ProjectHeader project={detail} readOnly={false} />)
     await screen.findByRole('heading', { name: 'Meu Produto' })
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' })
-    expect(within(nav).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '#/projects')
+    expect(within(nav).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects')
     expect(within(nav).getByText('Meu Produto')).toHaveAttribute('aria-current', 'page')
   })
 
   it('shows each repository with its branch and links it to its page', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" />)
+    renderWithQuery(overview())
     const row = await screen.findByRole('group', { name: 'web repository' })
-    expect(within(row).getByRole('link', { name: 'web' })).toHaveAttribute('href', '#/projects/meu-produto/repositories/r1')
+    expect(within(row).getByRole('link', { name: 'web' })).toHaveAttribute('href', '/projects/meu-produto/repositories/r1')
     expect(within(row).getByText('main')).toBeInTheDocument()
   })
 
   it('says why each environment was adopted when the host does not list it', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" />)
+    renderWithQuery(overview())
     expect(await screen.findByText('declared by its portta.project label')).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'alpha' })).toHaveAttribute('href', '#/environments/alpha')
+    expect(screen.getByRole('link', { name: 'alpha' })).toHaveAttribute('href', '/environments/alpha')
   })
 
   it('has every section as a tab that is a URL', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" />)
-    await screen.findByRole('heading', { name: 'Meu Produto' })
-    expect(screen.getByRole('tab', { name: 'Tasks' })).toHaveAttribute('href', '#/projects/meu-produto/tasks')
-    expect(screen.getByRole('tab', { name: 'Repositories (1)' })).toHaveAttribute('href', '#/projects/meu-produto/repositories')
-    expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute('href', '#/projects/meu-produto/activity')
+    renderWithQuery(<ProjectTabs slug="meu-produto" name="Meu Produto" repositories={1} environments={1} />)
+    expect(await screen.findByRole('tab', { name: 'Tasks' })).toHaveAttribute('href', '/projects/meu-produto/tasks')
+    expect(screen.getByRole('tab', { name: 'Repositories (1)' })).toHaveAttribute('href', '/projects/meu-produto/repositories')
+    expect(screen.getByRole('tab', { name: 'Activity' })).toHaveAttribute('href', '/projects/meu-produto/activity')
   })
 
-  it('shows the board on the tasks tab, with the filters in the hash', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" tab="tasks" query="?status=blocked" />)
+  it('shows the board on the tasks tab, with the filters in the URL', async () => {
+    navigation.search = 'status=blocked'
+    renderWithQuery(<TasksTabView project={detail} readOnly={false} initialTasks={TASKS} />)
     expect(await screen.findByRole('region', { name: 'Blocked column' })).toBeInTheDocument()
     expect(within(screen.getByRole('region', { name: 'Blocked column' })).getByRole('article', { name: '#7 Corrigir fila' })).toBeInTheDocument()
     expect(screen.queryByRole('article', { name: '#42 Implementar refresh token' })).not.toBeInTheDocument()
     await userEvent.click(screen.getByRole('radio', { name: 'Table' }))
-    await waitFor(() => expect(window.location.hash).toBe('#/projects/meu-produto/tasks?view=table&status=blocked'))
+    await waitFor(() => expect(navigation.push).toHaveBeenCalledWith('/projects/meu-produto/tasks?view=table&status=blocked'))
   })
 
   it('moves a card optimistically and rolls it back visibly when refused', async () => {
     setTaskStatus.mockRejectedValue(new ApiError(403, 'the panel is read-only, so task:write is refused'))
-    renderWithQuery(<ProjectPage slug="meu-produto" tab="tasks" />)
+    renderWithQuery(<TasksTabView project={detail} readOnly={false} initialTasks={TASKS} />)
     const card = await screen.findByRole('article', { name: '#7 Corrigir fila' })
     await userEvent.click(within(card).getByRole('button', { name: 'Actions for #7' }))
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Move to To do' }))
@@ -159,7 +181,7 @@ describe('the project cockpit', () => {
   })
 
   it('adds a repository the host scanned from the repositories tab', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" tab="repositories" />)
+    renderWithQuery(<RepositoriesTab project={detail} readOnly={false} />)
     await screen.findByRole('group', { name: 'web repository' })
     await userEvent.click(screen.getByRole('button', { name: /Add repository/ }))
     expect(await screen.findByText('shop/web')).toHaveAttribute('title', '/srv/projects/shop/web')
@@ -168,14 +190,14 @@ describe('the project cockpit', () => {
   })
 
   it('unregisters a repository without touching anything else', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" tab="repositories" />)
+    renderWithQuery(<RepositoriesTab project={detail} readOnly={false} />)
     const row = await screen.findByRole('group', { name: 'web repository' })
     await userEvent.click(within(row).getByRole('button', { name: 'Unregister' }))
     await waitFor(() => expect(deleteRepository).toHaveBeenCalledWith('r1'))
   })
 
   it('deletes the project only after the slug is typed back, and says what stays', async () => {
-    renderWithQuery(<ProjectPage slug="meu-produto" tab="settings" />)
+    renderWithQuery(<SettingsTab project={detail} readOnly={false} />)
     expect(await screen.findByText(/every container, volume, network/)).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Delete project' }))
     const confirm = screen.getByRole('button', { name: 'Delete project' })
@@ -184,16 +206,37 @@ describe('the project cockpit', () => {
     await userEvent.click(confirm)
     await waitFor(() => expect(deleteProject).toHaveBeenCalledWith('meu-produto'))
   })
+})
 
-  it('sends an old environment bookmark to the environment page', async () => {
-    project.mockRejectedValue(new ApiError(404, "no project 'alpha'"))
-    renderWithQuery(<ProjectPage slug="alpha" tab="logs" />)
-    await waitFor(() => expect(window.location.hash).toBe('#/environments/alpha/logs'))
+describe('what a role is shown', () => {
+  const viewer = principal({ role: 'viewer', permissions: ['project:read', 'task:read', 'repository:read'] })
+
+  it('offers a viewer no new task, no repository to add, and no way to remove one', async () => {
+    renderWithQuery(<RepositoriesTab project={detail} readOnly={false} />, undefined, viewer)
+    await screen.findByRole('group', { name: 'web repository' })
+    expect(screen.queryByRole('button', { name: /Add repository/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Unregister' })).not.toBeInTheDocument()
   })
 
-  it('says the database is needed instead of redirecting', async () => {
-    project.mockRejectedValue(new ApiError(503, 'panel persistence is unavailable'))
-    renderWithQuery(<ProjectPage slug="meu-produto" />)
-    expect(await screen.findByText("Projects need the panel's database")).toBeInTheDocument()
+  it('offers a viewer neither form on the settings tab, and says what the tab is', async () => {
+    renderWithQuery(<SettingsTab project={detail} readOnly={false} />, undefined, viewer)
+    expect(await screen.findByText('Project')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Delete project' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+  })
+
+  // A developer works, and a developer in this Project may write in it. Being a
+  // member is the difference, and the header is where the action lives.
+  it('offers a developer of this Project a new task', async () => {
+    const member = principal({ role: 'developer', permissions: ['task:write', 'project:read'], scope: [1] })
+    renderWithQuery(<ProjectHeader project={{ ...detail, id: '1' }} readOnly={false} />, undefined, member)
+    expect(await screen.findByRole('button', { name: 'New task' })).toBeInTheDocument()
+  })
+
+  it('offers a developer of another Project none', async () => {
+    const outsider = principal({ role: 'developer', permissions: ['task:write', 'project:read'], scope: [99] })
+    renderWithQuery(<ProjectHeader project={{ ...detail, id: '1' }} readOnly={false} />, undefined, outsider)
+    await screen.findByRole('heading', { name: 'Meu Produto' })
+    expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument()
   })
 })

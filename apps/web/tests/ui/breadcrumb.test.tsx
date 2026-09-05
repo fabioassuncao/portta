@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { screen, within } from '@testing-library/react'
 import { renderWithQuery } from './render.tsx'
-import { Breadcrumb } from '../../src/ui/components/ui/breadcrumb.tsx'
+import { Breadcrumb } from '@/components/ui/breadcrumb'
 
 const trail = [
-  { label: 'Projects', href: '#/projects' },
-  { label: 'Shop', href: '#/projects/shop' },
-  { label: 'Tasks', href: '#/projects/shop/tasks' },
+  { label: 'Projects', href: '/projects' },
+  { label: 'Shop', href: '/projects/shop' },
+  { label: 'Tasks', href: '/projects/shop/tasks' },
   { label: '#42' },
 ]
 
@@ -21,9 +21,9 @@ describe('breadcrumb', () => {
   it('links every ancestor to its href', () => {
     renderWithQuery(<Breadcrumb items={trail} />, 'en')
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' })
-    expect(within(nav).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '#/projects')
-    expect(within(nav).getByRole('link', { name: 'Shop' })).toHaveAttribute('href', '#/projects/shop')
-    expect(within(nav).getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '#/projects/shop/tasks')
+    expect(within(nav).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects')
+    expect(within(nav).getByRole('link', { name: 'Shop' })).toHaveAttribute('href', '/projects/shop')
+    expect(within(nav).getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '/projects/shop/tasks')
   })
 
   it('marks the last item as the current page, and it is not a link', () => {
@@ -51,7 +51,7 @@ describe('breadcrumb', () => {
   })
 
   it('dims an ancestor whose name is still loading', () => {
-    renderWithQuery(<Breadcrumb items={[{ label: 'Projects', href: '#/projects' }, { label: 'shop', href: '#/projects/shop', pending: true }, { label: 'api' }]} />, 'en')
+    renderWithQuery(<Breadcrumb items={[{ label: 'Projects', href: '/projects' }, { label: 'shop', href: '/projects/shop', pending: true }, { label: 'api' }]} />, 'en')
     expect(screen.getByRole('link', { name: 'shop' })).toHaveClass('opacity-60')
     expect(screen.getByRole('link', { name: 'Projects' })).not.toHaveClass('opacity-60')
   })

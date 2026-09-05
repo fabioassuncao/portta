@@ -13,19 +13,19 @@
 #      opts into Traefik is not reachable on this port. Panel access and
 #      application exposure stay separate decisions.
 #
-#   2. The router carries `portta-forward-auth@file`, rendered into
-#      config/traefik/dynamic/portta-auth.yaml. If that file is
-#      missing the middleware cannot resolve and Traefik fails the router
-#      closed: the panel answers 404, never unauthenticated. The CLI and the
-#      installer both refuse this mode without a credential.
+#   2. The panel signs people in itself. There is no middleware on this
+#      router: `PORTTA_AUTH_MODE=required` is what stands in front of it, the
+#      panel's own process refuses to start in `disabled` mode on anything but
+#      loopback, and `portta web up --expose public` refuses before that.
+#      See docs/adr/0035-authentication-lives-in-the-panel.md.
 #
 # The panel container itself publishes no host port here (web-bind.yaml is not
-# applied), so the only way in is through the middleware.
+# applied), so the only way in is through this entrypoint.
 #
 # HTTP, not HTTPS, when the address is a bare IP: there is no certificate a
-# public CA will issue for one. The credential is checked by ForwardAuth but
-# the connection is not encrypted, and the installer says so in as many words.
-# Set PUBLIC_DOMAIN with TLS_ENABLED=true for a real certificate.
+# public CA will issue for one. The password is checked by the panel but the
+# connection is not encrypted, and the installer says so in as many words.
+# `--expose domain` is the mode that gets a real certificate.
 # ============================================================================
 
 services:
@@ -44,5 +44,4 @@ services:
       # entrypoint is what scopes it: nothing else answers on :8090.
       traefik.http.routers.portta-panel.rule: PathPrefix(`/`)
       traefik.http.routers.portta-panel.entrypoints: panel
-      traefik.http.routers.portta-panel.middlewares: portta-forward-auth@file
       traefik.http.services.portta-panel.loadbalancer.server.port: "8081"

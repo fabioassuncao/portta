@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { apr1, createApiToken, emptyProtectionStore, readProtectionStore, setProtection, writeProtectionStore } from 'portta-core'
+import { apr1, emptyProtectionStore, readProtectionStore, setProtection, writeProtectionStore } from 'portta-core'
 import { createAuthApp, safeNext } from './app.ts'
 import type { AuthConfig } from './config.ts'
 import { LoginLimiter } from './rate-limit.ts'
@@ -84,18 +84,18 @@ describe('ForwardAuth app', () => {
     expect(response.headers.has('set-cookie')).toBe(false)
   })
 
-  it('accepts a panel Bearer token and forwards its actor and capabilities', async () => {
+  // Portta tokens are the panel's, and the panel checks them itself. This
+  // process protects project hostnames and shares; a Bearer here is somebody
+  // else's credential and means nothing.
+  it('has nothing to say about a Bearer token', async () => {
     const { app, storePath } = setup()
-    const panel = setProtection(readProtectionStore(storePath), {
+    writeProtectionStore(storePath, setProtection(readProtectionStore(storePath), {
       scope: 'panel', host: 'panel.example.com', entryPoints: ['websecure'], user: 'reviewer', hash: apr1('correct', 'abcdefgh'), label: 'Panel',
-    })
-    const created = createApiToken(panel, { name: 'Codex', actor: 'codex', capabilities: ['task:read', 'task:write'] })
-    writeProtectionStore(storePath, created.store)
-    const response = await app.request('/verify?scope=panel', { headers: { ...forwarded, 'x-forwarded-host': 'panel.example.com', authorization: `Bearer ${created.token}` } })
-    expect(response.status).toBe(200)
-    expect(response.headers.get('x-portta-actor')).toBe('codex')
-    expect(response.headers.get('x-portta-capabilities')).toBe('task:read,task:write')
-    expect(response.headers.get('x-portta-token-authenticated')).toBe('true')
+    }))
+    const response = await app.request('/verify?scope=panel', { headers: { ...forwarded, 'x-forwarded-host': 'panel.example.com', authorization: 'Bearer ptt_anything' } })
+    expect(response.status).toBe(401)
+    expect(response.headers.has('x-portta-capabilities')).toBe(false)
+    expect(response.headers.has('x-portta-token-authenticated')).toBe(false)
   })
 
   it.each([

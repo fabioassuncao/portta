@@ -6,6 +6,7 @@
 // way a refusal is worded exist once. `portta mcp` wraps the same client.
 
 import type { GatewayContext } from './context.js'
+import { findCredential } from './credentials.js'
 import { CliError, EXIT, PreconditionError, RefusedError } from './errors.js'
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
@@ -42,20 +43,27 @@ export function resolvePanelUrl(
   return url
 }
 
-/** The panel credential, when the panel is authenticated. Never logged. */
-export function panelHeaders(env: Record<string, string | undefined>, actor: string, actorKind?: 'human' | 'agent'): Record<string, string> {
+/**
+ * The credential this command sends, and where it came from.
+ *
+ * Precedence is deliberate and is the order of how explicit each source is:
+ * `--token` on this invocation, then `PORTTA_TOKEN` in this environment, then
+ * whatever `portta auth login` saved for this panel. A panel in `disabled` mode
+ * needs none of them and gets none.
+ *
+ * Never logged, never echoed, never put on a command line by this process.
+ */
+export function panelHeaders(
+  env: Record<string, string | undefined>,
+  actor: string,
+  actorKind?: 'human' | 'agent',
+  options: { url?: string; token?: string } = {},
+): Record<string, string> {
   const headers: Record<string, string> = { 'content-type': 'application/json', 'X-Portta-Actor': actor, 'X-Portta-Source': 'cli' }
   if (actorKind) headers['X-Portta-Actor-Kind'] = actorKind
-  const token = env['PORTTA_TOKEN']
-  if (token) {
-    headers['authorization'] = `Bearer ${token}`
-    return headers
-  }
-  const user = env['PORTTA_WEB_AUTH_USER']
-  const password = env['PORTTA_PANEL_PASSWORD']
-  if (user && password) {
-    headers['authorization'] = `Basic ${Buffer.from(`${user}:${password}`).toString('base64')}`
-  }
+  const stored = options.url ? findCredential(options.url)?.token : undefined
+  const token = options.token ?? env['PORTTA_TOKEN'] ?? stored
+  if (token) headers['authorization'] = `Bearer ${token}`
   return headers
 }
 
@@ -146,13 +154,39 @@ export interface PanelOptions {
   allowRemote?: boolean
   actor?: string
   actorKind?: 'human' | 'agent'
+  /** This invocation's token, ahead of the environment and the saved one. */
+  token?: string
+}
+
+/**
+ * Who is at the other end of this command, when nobody said.
+ *
+ * A person. The panel narrows a request that announces itself as an agent to
+ * what agents may do, and it treats an actor with no declared kind as one —
+ * which is the right default for a bare header on the API, and the wrong one
+ * here: `portta projects create` is somebody typing, and being silently
+ * narrowed to what an agent holds made it answer 403 on a panel where the
+ * operator holds everything.
+ *
+ * An agent driving the CLI says so with PORTTA_ACTOR_KIND=agent, and `portta
+ * mcp` — the surface that exists for agents — declares it outright.
+ */
+function declaredKind(env: NodeJS.ProcessEnv): 'human' | 'agent' {
+  return env['PORTTA_ACTOR_KIND'] === 'agent' ? 'agent' : 'human'
+}
+
+/** What a command sends, composed where a test can read it back. */
+export function panelRequestHeaders(context: GatewayContext, options: PanelOptions = {}): Record<string, string> {
+  const url = resolvePanelUrl(context.env, options, context.env['PORTTA_WEB_PORT'] ?? '8081')
+  const actor = options.actor ?? context.env['PORTTA_ACTOR'] ?? context.env['PORTTA_MCP_ACTOR'] ?? process.env['USER'] ?? 'operator'
+  const actorKind = options.actorKind ?? declaredKind(context.env)
+  return panelHeaders(context.env, actor, actorKind, { url, ...(options.token ? { token: options.token } : {}) })
 }
 
 /** The client a command uses, from the gateway context it already has. */
 export function panelClient(context: GatewayContext, options: PanelOptions = {}): PanelClient {
   const url = resolvePanelUrl(context.env, options, context.env['PORTTA_WEB_PORT'] ?? '8081')
-  const actor = options.actor ?? context.env['PORTTA_ACTOR'] ?? context.env['PORTTA_MCP_ACTOR'] ?? process.env['USER'] ?? 'operator'
-  return new PanelClient(url, panelHeaders(context.env, actor, options.actorKind))
+  return new PanelClient(url, panelRequestHeaders(context, options))
 }
 
 /** `owner/repo#number` and a slug both have to survive a path segment. */

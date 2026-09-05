@@ -11,16 +11,16 @@
 # reachable from the internet". That was written when the panel's only
 # protection was Traefik's BasicAuth. It is no longer the whole picture: the
 # `public` mode the installer offers first already publishes the panel on
-# 0.0.0.0, and what stands in front of it is ForwardAuth -- a login page, a
-# host-scoped session, an epoch that signs sessions out, and a rate limiter
-# (docs/adr/0027-forward-authentication-service.md).
+# 0.0.0.0, and what stands in front of it is the panel itself -- accounts,
+# roles, sessions, a second factor and a rate limiter, all of them its own
+# (docs/adr/0035-authentication-lives-in-the-panel.md).
 #
 # So the remaining difference between `public` and this is not exposure. It is
 # which entrypoint carries the panel, and what that costs:
 #
 #   `public`  keeps the panel on its own entrypoint, so it needs no hostname
 #             and works on a bare IP -- but that entrypoint terminates no TLS,
-#             so the credential crosses the network in clear text.
+#             so the password crosses the network in clear text.
 #   `domain`  puts the panel on websecure, where it gets a real certificate and
 #             the same HTTPS every application gets. It needs a hostname, and
 #             it gives up the property that the panel's entrypoint carries
@@ -29,11 +29,9 @@
 # The router names exactly one host, so publishing the panel still publishes no
 # application: an application is reachable only through a router of its own.
 #
-# The middleware is `portta-web-auth@file` -- the panel scope, not the project
-# one -- rendered into config/traefik/dynamic/portta-auth.yaml. If that file is
-# missing the middleware cannot resolve and Traefik fails the router closed:
-# the panel answers 404, never unauthenticated. The CLI refuses this mode
-# without a credential. See ADR 0012 and ADR 0027.
+# There is no middleware: the panel signs people in itself, and `portta web up
+# --expose domain` refuses unless PORTTA_AUTH_MODE=required and TLS is on.
+# See docs/adr/0035-authentication-lives-in-the-panel.md.
 # ============================================================================
 
 services:
@@ -43,5 +41,4 @@ services:
       traefik.enable: "true"
       traefik.http.routers.portta-panel.rule: >-
         Host(`${PORTTA_PANEL_ADVERTISED_HOST:-portta-web}`)
-      traefik.http.routers.portta-panel.middlewares: "portta-web-auth@file"
       traefik.http.services.portta-panel.loadbalancer.server.port: "8081"

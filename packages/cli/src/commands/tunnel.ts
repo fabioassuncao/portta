@@ -1,3 +1,4 @@
+import { patchEnvFile } from 'portta-core'
 // `portta tunnel`: publish over HTTPS without opening a port.
 //
 // Cloudflare Tunnel is an optional exposure provider, never a dependency
@@ -23,13 +24,10 @@ import {
   attachment,
   describeTunnel,
   parseTunnelToken,
-  readEnvFile,
   renderTunnelConfig,
   renderTunnelCredentials,
-  setEnvValue,
   tunnelDnsTarget,
   tunnelStatusFrom,
-  writeEnvFile,
   type TunnelStatus,
 } from 'portta-core'
 import { composeArguments, gatewayContext, type GatewayContext } from '../context.js'
@@ -239,10 +237,7 @@ export async function tunnelSetup(options: TunnelSetupOptions, command: Command)
   writeFileSync(paths.config, renderTunnelConfig(config))
 
   const envPath = join(context.root, '.env')
-  let text = readEnvFile(envPath)
-  text = setEnvValue(text, 'CLOUDFLARE_TUNNEL_ZONE', options.zone)
-  text = setEnvValue(text, 'CLOUDFLARE_TUNNEL_ID', credentials.TunnelID)
-  writeEnvFile(envPath, text)
+  patchEnvFile(envPath, { CLOUDFLARE_TUNNEL_ZONE: options.zone, CLOUDFLARE_TUNNEL_ID: credentials.TunnelID })
 
   if (output.json) {
     output.data({ zone: options.zone, tunnel: credentials.TunnelID, origin, routes: describeTunnel(config), dns: { type: 'CNAME', name: `*.${options.zone}`, target: tunnelDnsTarget(credentials.TunnelID), proxied: true } })
@@ -274,7 +269,7 @@ export async function tunnelEnable(command: Command): Promise<void> {
     throw new PreconditionError('the connector is not configured', 'portta tunnel setup --zone <domain>')
   }
   const envPath = join(context.root, '.env')
-  writeEnvFile(envPath, setEnvValue(readEnvFile(envPath), 'CLOUDFLARE_TUNNEL_ENABLED', 'true'))
+  patchEnvFile(envPath, { CLOUDFLARE_TUNNEL_ENABLED: 'true' })
   output.progress('Cloudflare Tunnel enabled')
   output.progress('starting the connector')
 
@@ -298,14 +293,14 @@ export async function tunnelDisable(options: { forget?: boolean }, command: Comm
     { cwd: running.root, env: running.env, reject: false })
 
   const envPath = join(running.root, '.env')
-  let text = setEnvValue(readEnvFile(envPath), 'CLOUDFLARE_TUNNEL_ENABLED', 'false')
+  const values: Record<string, string> = { CLOUDFLARE_TUNNEL_ENABLED: 'false' }
   if (options.forget) {
     const paths = tunnelPaths(running.root)
     rmSync(paths.config, { force: true })
     rmSync(paths.credentials, { force: true })
-    text = setEnvValue(text, 'CLOUDFLARE_TUNNEL_ID', '')
+    values['CLOUDFLARE_TUNNEL_ID'] = ''
   }
-  writeEnvFile(envPath, text)
+  patchEnvFile(envPath, values)
   output.progress(options.forget
     ? 'the connector is stopped and its configuration removed'
     : 'the connector is stopped; its configuration is kept for re-enabling')

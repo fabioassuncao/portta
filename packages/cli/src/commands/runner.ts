@@ -7,8 +7,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   RUNNER_CONTAINER,
-  RUNNER_IMAGE,
   isTrue,
+  porttaImages,
   runnerCreateArguments,
   runnerRefusal,
   runnerSpec,
@@ -67,18 +67,17 @@ export async function ensureRunner(context: GatewayContext): Promise<RunnerOutco
   }
 
   const context_dir = join(context.root, 'docker', 'images', 'apply')
+  const image = porttaImages(context.version).apply
   if (!existsSync(join(context_dir, 'Dockerfile'))) {
     return { action: 'failed', reason: `no runner image source at ${context_dir}` }
   }
-  const present = await runProcess('docker', ['image', 'inspect', RUNNER_IMAGE], { reject: false })
+  const present = await runProcess('docker', ['image', 'inspect', image], { reject: false })
   if (present.exitCode !== 0) {
-    // RUNNER_IMAGE is APPLY_IMAGE (packages/core/src/runner.ts); tagged by the
-    // name this file inspected, so the two lines read as the same image.
-    const built = await runProcess('docker', ['build', '-t', RUNNER_IMAGE, context_dir], { reject: false, stdio: 'stream' })
-    if (built.exitCode !== 0) return { action: 'failed', reason: `could not build ${RUNNER_IMAGE}` }
+    const built = await runProcess('docker', ['build', '--build-arg', `PORTTA_VERSION=${context.version}`, '-t', image, context_dir], { reject: false, stdio: 'stream' })
+    if (built.exitCode !== 0) return { action: 'failed', reason: `could not build ${image}` }
   }
 
-  const created = await runProcess('docker', runnerCreateArguments(context.root, spec), { reject: false })
+  const created = await runProcess('docker', runnerCreateArguments(context.root, spec, context.version), { reject: false })
   return created.exitCode === 0
     ? { action: 'created' }
     : { action: 'failed', reason: created.stderr.trim() || 'docker create failed' }

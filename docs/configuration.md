@@ -1,12 +1,38 @@
 # Configuration
 
-Everything lives in `.env` at the repository root, copied from
-`.env.example`. It is git-ignored and may hold secrets, so `bootstrap` creates
-it `chmod 600` and `doctor` warns if it becomes group- or world-readable.
+The installation `.env` is the source of shared configuration and credentials.
+`.env.example` defines its structure, groups, comments and supported variables.
+`portta config prepare` creates or reconciles it without starting services;
+`bootstrap`, `dev`, `up`, `web up`, `setup` and the installer also prepare it.
 
-Precedence follows Compose: **shell environment > `.env` > built-in defaults**.
-Every value has a default, so an empty `.env` still yields a working local
-gateway.
+Persisted `.env` values **win over the inherited shell environment**. Explicit
+configuration commands write the file before resolving Compose. Runtime selectors
+such as `PORTTA_ROOT`, `PATH` and `PORTTA_FORCE_BASH` are process inputs, not
+installation settings. Internal service ports and filesystem paths in containers
+are architectural constants. `PORTTA_VERSION` derives from `VERSION`.
+
+Preparation fills absent keys from the template and generates absent/empty secrets
+once. It keeps configured values, including deliberate empty optional fields.
+First structural normalization keeps a `0600` `.env.before-structure` backup;
+known keys follow the template and personal comments/extensions are retained.
+Future missing keys are inserted near their template neighbours. Ordinary edits
+only replace the requested values, preserving comments, order, spacing and line
+endings. Duplicate keys are rejected. Dotenv content is parsed, never executed;
+Portta treats values literally rather than evaluating `${OTHER_VARIABLE}`.
+
+CLI and panel share `portta-core`'s document editor. The zero-Node shell adapter
+is checked against the same fixtures. A `.env-lock/writer` directory serializes
+writes across the host and panel; `.env-lock` is a shared mount, not image content.
+Backups and in-place writes preserve the file's inode and mode `0600`. A stale
+lock fails with a diagnostic; only remove it after verifying no writer is active.
+
+See [the configuration audit](configuration-audit.md) for the variable inventory,
+container map, removals and validation results.
+
+How those values relate — project hostnames, public access, the panel URL,
+Traefik, TLS, VPN and DNS — is [addresses-and-access.md](addresses-and-access.md).
+The Settings pages edit the same keys without asking you to think in variable
+names.
 
 ```bash
 portta inspect     # what the CLI actually resolved (secrets shown as <set>)
@@ -66,15 +92,18 @@ by the public profile.
 | `PORTTA_DASHBOARD` | `false` | Enable Traefik's dashboard |
 | `PORTTA_DASHBOARD_BIND_ADDRESS` | `127.0.0.1` | Interface for the dashboard port |
 | `PORTTA_DASHBOARD_PORT` | `8080` | Host port |
-| `PORTTA_DASHBOARD_EXPOSE` | `local` | `local` publishes `:8080` on loopback; `domain` routes `api@internal` behind ForwardAuth |
+| `PORTTA_DASHBOARD_EXPOSE` | `local` | `local` publishes `:8080` on loopback. `domain` is refused: see below |
 | `PORTTA_DASHBOARD_ADVERTISED_HOST` | `<project>-traefik.<domain>` | Hostname for the routed dashboard; derived, never hardcoded |
 
 The loopback path exposes your full routing table on its own port, never
 through `web`/`websecure`, so it can never appear under the public wildcard
 domain. `doctor` still fails if that port is bound anywhere but loopback.
-`PORTTA_DASHBOARD_EXPOSE=domain` is a separate path: no host port, no
-`TRAEFIK_API_INSECURE`, and the same login as the panel. It is refused
-without a credential or a real domain.
+
+`PORTTA_DASHBOARD_EXPOSE=domain` is refused. It borrowed the panel's BasicAuth
+credential, and the panel signs people in itself now
+([ADR 0035](adr/0035-authentication-lives-in-the-panel.md)); the dashboard has no
+credential of its own, and an unprotected view of every route on the host is not
+something to warn about. Loopback is where it belongs.
 
 ## Databases by hostname
 
@@ -100,9 +129,12 @@ See [tcp-routing.md](tcp-routing.md).
 | `PORTTA_WEB_EXPOSE` | `local` | `local`, `tailscale`, `public`, `vpn`, or `domain` to route it on the gateway's domain over HTTPS |
 | `PORTTA_PANEL_ADVERTISED_HOST` | derived | The hostname `domain` routes on, and the address a human types |
 | `PORTTA_WEB_HOST` | `portta-web` | Hostname label used by `vpn` |
-| `PORTTA_WEB_READ_ONLY` | `false` | Refuse every mutating endpoint |
-| `PORTTA_WEB_DEV` | `false` | Development mode, Vite with HMR in front |
-| `PORTTA_WEB_DEV_PORT` | `5173` | Vite's host port in development mode |
+| `PORTTA_WEB_READ_ONLY` | `false` | Refuse every mutating endpoint, whoever signed in |
+| `PORTTA_AUTH_MODE` | `disabled` | `disabled` answers everybody as the local operator and is allowed only on loopback; `required` makes people sign in |
+| `PORTTA_PANEL_URL` | `http://127.0.0.1:<port>` | The origin a browser reaches the panel on. Decides where sign-in redirects to and whether the session cookie may be `Secure` |
+| `PORTTA_PANEL_TRUSTED_ORIGINS` | empty | Other origins a browser may sign in from, comma-separated. Loopback and the panel URL are always trusted |
+| `PORTTA_AUTH_SIGNIN_ATTEMPTS` | `5` | Sign-in attempts one address gets every ten minutes. 3–100; anything else reads as the default |
+| `PORTTA_WEB_DEV` | `false` | Development mode: bind-mounted panel and ForwardAuth sources reload on change; the dev image only supplies dependencies |
 | `PORTTA_WEB_NETWORK` | `portta-web` | The panel's own internal control network |
 | `PORTTA_WEB_USER` | owner of `.env` | User the panel container runs as, so Settings can save |
 | `PORTTA_APPLY` | `false` | Prepare the applier the panel may start to run `portta up` ([ADR 0026](adr/0026-applying-settings-from-the-panel.md)) |
@@ -111,21 +143,27 @@ See [tcp-routing.md](tcp-routing.md).
 | `PORTTA_DB_NETWORK` | `portta-data` | Internal panel-to-PostgreSQL network |
 | `PORTTA_DB_VOLUME` | `portta-db` | Named volume holding panel data |
 | `PORTTA_RUNTIME_DB_PASSWORD` | generated | **Secret.** Panel PostgreSQL credential |
-| `PORTTA_RUNTIME_DATABASE_URL` | empty | Development/test bootstrap override; normally Compose supplies it |
-| `PORTTA_AUTH_SECRET` | generated | **Secret.** HMAC key for host-scoped login sessions |
+| `PORTTA_RUNTIME_DB_MODE` | `managed` | `managed` selects the private Compose database; `external` requires the URL below |
+| `PORTTA_RUNTIME_DB_NAME` | `portta` | Database initialized in a fresh managed volume |
+| `PORTTA_RUNTIME_DB_USER` | `portta` | Role initialized in a fresh managed volume |
+| `PORTTA_RUNTIME_DATABASE_URL` | empty | Explicit external connection URL; rejected when set in managed mode |
+| `PORTTA_AUTH_SECRET` | generated | **Secret.** Signs the panel's sessions and tokens, and the ForwardAuth process's host-scoped cookies. Rotating it signs everybody out of both |
 | `PORTTA_AUTH_IMAGE` | Portta release image | Image running the isolated auth process |
 | `PORTTA_RUNTIME_DOCS` | `true` | Serve this documentation at `/docs`, from the panel image. Static text with no host information in it, so a routed panel may serve it |
 | `PORTTA_RUNTIME_API_DOCS` | empty | Serve the API reference and its console at `/docs/api`. Empty means the safe default: on for loopback, off when routed |
 
-The panel binds loopback by default. Routed `vpn` and `public` modes require a
-credential and use Portta ForwardAuth; `vpn` is refused on the `remote-public`
-profile. On a Linux host set `PORTTA_WEB_USER` to
+The panel binds loopback by default, and `PORTTA_AUTH_MODE=disabled` is only
+allowed there: reaching a loopback panel already means having the machine, which
+is true of nothing else, so the panel refuses to start rather than warn. Every
+other access mode — `tailscale`, `public`, `vpn`, `domain` — requires
+`required`, and `vpn` is refused on the `remote-public` profile. On a Linux host set `PORTTA_WEB_USER` to
 `$(id -u):$(id -g)` if you want the Settings page to be able to write `.env`.
 
-`portta web up` sets these for you and generates the database credential
-without printing it. PostgreSQL publishes no host port and remains a soft
-dependency: the Docker-backed panel still starts if it is unavailable. See
-[web-ui.md](web-ui.md), [authentication.md](authentication.md) and [persistence.md](persistence.md).
+`portta web up` sets these for you and generates the database credential and the
+signing secret without printing either. PostgreSQL publishes no host port and is
+a boot dependency: the panel remembers everything there, including who its users
+are. See [web-ui.md](web-ui.md), [authentication.md](authentication.md) and
+[persistence.md](persistence.md).
 
 ## TLS
 

@@ -15,7 +15,7 @@
 # tests/unit/runner.test.sh runs both and compares the resulting `docker create`
 # argument lists.
 
-PORTTA_RUNNER_IMAGE="fabioassuncao/portta-apply:0.2.0"
+PORTTA_RUNNER_IMAGE="fabioassuncao/portta-apply:$(portta_version)"
 PORTTA_RUNNER_CONTAINER="portta-runner"
 
 portta_runner_spec() {

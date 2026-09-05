@@ -42,23 +42,10 @@ const VIEWPORTS = [
   { name: 'tablet-portrait', width: 820, height: 1180 },
 ]
 
-const ROUTES = [
-  { name: 'overview', route: '/#/overview', ready: 'Demo Shop' },
-  { name: 'projects-cards', route: '/#/projects', ready: 'Demo Shop' },
-  {
-    name: 'projects-table',
-    route: '/#/projects',
-    ready: 'Demo Shop',
-    async before(page) {
-      await page.getByRole('radio', { name: 'Table' }).click()
-      await page.getByRole('table').waitFor()
-    },
-  },
-  { name: 'task-board', route: '/#/projects/demo-shop/tasks', ready: 'Configurar autenticação' },
-  { name: 'task-table', route: '/#/projects/demo-shop/tasks?view=table', ready: 'Configurar autenticação' },
-  { name: 'services', route: '/#/services', ready: 'demo-shop' },
-  { name: 'docker', route: '/#/docker' },
-  { name: 'settings', route: '/#/settings/gateway' },
+// The pages that exist. The rest return as each is ported to the App Router.
+const TARGETS = [
+  { name: 'overview', route: '/overview', ready: 'Demo Shop' },
+  { name: 'docs', route: '/docs', ready: 'Portta docs' },
 ]
 
 function sleep(ms) {
@@ -125,7 +112,8 @@ const harness = spawn(process.execPath, [join(here, 'harness.mjs')], {
     PORTTA_TCP: 'true',
     PORTTA_E2E_DOCKER_PORT: String(DOCKER_PORT),
     PORTTA_E2E_PANEL_PORT: String(PANEL_PORT),
-    PORTTA_RUNTIME_DATABASE_URL: DATABASE_URL,
+    PORTTA_RUNTIME_DB_MODE: 'external',
+      PORTTA_RUNTIME_DATABASE_URL: DATABASE_URL,
   },
 })
 

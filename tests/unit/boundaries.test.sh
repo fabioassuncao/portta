@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# ============================================================================
+# Workspace boundaries: who may import whom
+# ============================================================================
+# The monorepo's shape is a decision, and a decision nothing enforces is a
+# suggestion. An import that crosses the wrong way does not fail to compile —
+# npm workspaces resolve every package from the same node_modules — so it is
+# caught here instead, in milliseconds, against the map in docs/monorepo.md.
+#
+# The permitted edges:
+#
+#   contracts -> core
+#   db        -> core
+#   auth      -> db, contracts
+#   server    -> core, contracts, db, auth
+#   web       -> core, contracts, db, auth, server
+#   cli       -> core, contracts
+#   apps/auth -> core
+#
+# Only `src/` is checked. A package's build scripts and its suites may reach
+# further — packages/contracts generates its OpenAPI document from the server's
+# routes — because nothing a consumer loads follows them.
+#
+# A package that does not exist yet passes: packages/db and packages/auth arrive
+# in later phases of the migration, and the rule is written before they do so
+# the first import in them is already governed.
+# ============================================================================
+set -uo pipefail
+
+PORTTA_TEST_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+. "$PORTTA_TEST_DIR/lib/assert.sh"
+PORTTA_ROOT=$(cd -P "$PORTTA_TEST_DIR/.." && pwd); export PORTTA_ROOT
+cd "$PORTTA_ROOT" || exit 1
+
+# Every workspace import in a directory's source, as `file:line:specifier`.
+# `from 'portta-…'` and `import('portta-…')` both count; a comment naming a
+# package does not, which is why the quote is part of the pattern.
+imports() {
+  local dir="$1"
+  [ -d "$dir" ] || return 0
+  grep -rnoE "(from|import\()\s*'portta-[a-z-]*(/[a-z-]+)?'" "$dir" \
+    --include='*.ts' --include='*.tsx' 2>/dev/null \
+    | grep -oE "portta-[a-z-]*" | sort -u || true
+}
+
+# What is left after removing the packages a directory is allowed to import.
+forbidden() {
+  local dir="$1"; shift
+  local allowed="$*"
+  local found
+  found=$(imports "$dir")
+  [ -n "$found" ] || return 0
+  local package
+  for package in $found; do
+    case " $allowed " in
+      *" $package "*) ;;
+      *) printf '%s\n' "$package" ;;
+    esac
+  done
+}
+
+describe "a package imports only what its layer allows"
+
+# The shared derivations run on the host, in the panel and in the CLI. A
+# dependency on anything else in the monorepo would make one of the three
+# impossible to build.
+it "portta-core imports nothing from the monorepo"
+assert_eq "" "$(forbidden packages/core/src)"
+
+# The contract is what the browser, the CLI and a future SDK compile against.
+# It may name the vocabulary in core; it may not know a database exists.
+it "portta-contracts imports only portta-core"
+assert_eq "" "$(forbidden packages/contracts/src portta-core)"
+
+# Persistence holds no business rule, so it has nothing to ask auth or the
+# services for.
+it "portta-db imports only portta-core"
+assert_eq "" "$(forbidden packages/db/src portta-core)"
+
+# Authentication knows the schema it stores sessions in and the shapes it
+# answers with, and nothing about Docker, projects or environments.
+it "portta-auth-core imports only portta-db and portta-contracts"
+assert_eq "" "$(forbidden packages/auth/src portta-core portta-db portta-contracts)"
+
+# The CLI runs on the host, against a panel it reaches over HTTP. It never
+# opens the PostgreSQL the panel owns, which is why it cannot import the
+# packages that could.
+it "portta the CLI never imports the database, auth or the server"
+assert_eq "" "$(forbidden packages/cli/src portta-core portta-contracts)"
+
+# The ForwardAuth service protects project hostnames and shares. It is not the
+# panel and must not grow into it.
+it "the ForwardAuth service imports only portta-core"
+assert_eq "" "$(forbidden apps/auth/src portta-core)"
+
+# The panel composes; it is the one place allowed to reach the server, because
+# a Server Component calls a service directly rather than fetching its own API.
+it "the panel composes the packages below it, and nothing outside them"
+assert_eq "" "$(forbidden apps/web/src portta-core portta-contracts portta-db portta-auth-core portta-server)"
+
+describe "the boundary holds in the other direction too"
+
+# A package below the panel that reached back up would make the panel
+# unbuildable in isolation and the server untestable without a UI.
+it "nothing below the panel imports the panel"
+assert_eq "" "$(grep -rn "from 'portta-web'" packages --include='*.ts' --include='*.tsx' 2>/dev/null || true)"
+
+# Relative paths are the loophole the package names close: `../../../apps/web`
+# resolves perfectly well and answers to none of the rules above.
+it "no package reaches into another by relative path"
+assert_eq "" "$(grep -rnE "from '(\.\./){2,}(apps|packages)/" packages apps --include='*.ts' --include='*.tsx' 2>/dev/null || true)"

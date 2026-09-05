@@ -1,9 +1,8 @@
 # ============================================================================
 # Portta: build the auth image locally (checkout only)
 # ============================================================================
-# Applied when PORTTA_WEB_BUILD or PORTTA_WEB_DEV is true, and whenever the
-# checkout still has apps/auth. An installed PORTTA_HOME has no application
-# source and keeps pulling the published image.
+# Applied only when PORTTA_WEB_BUILD=true. Development uses auth-dev.yaml;
+# normal local-release and installed runs consume an already-built image.
 #
 # The runtime target is what `portta up` migrates and what the long-running
 # service executes: /app/apps/auth/dist/migrate.js and index.js.
@@ -16,11 +15,15 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       target: runtime
-    image: ${PORTTA_AUTH_IMAGE:-fabioassuncao/portta:local}
+      args:
+        PORTTA_VERSION: ${PORTTA_VERSION:-}
+    image: ${PORTTA_AUTH_IMAGE:-fabioassuncao/portta:${PORTTA_VERSION}}
 
   portta-auth-migrate:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
       target: runtime
-    image: ${PORTTA_AUTH_IMAGE:-fabioassuncao/portta:local}
+      args:
+        PORTTA_VERSION: ${PORTTA_VERSION:-}
+    image: ${PORTTA_AUTH_IMAGE:-fabioassuncao/portta:${PORTTA_VERSION}}

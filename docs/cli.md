@@ -177,12 +177,26 @@ file or stdin.
 | `web up`, `web dev` | `--expose local|vpn`, `--port`, `--read-only`, `--writable` |
 | `web down|disable|restart|status|open|build` | Global flags only. |
 | `web logs [service]` | `web`, `web-ui`, `web-socket-proxy` or `db`. |
-| `web auth status|clear|apply` | Global flags only. |
-| `web auth set` | `--user`, `--password-stdin`; generated passwords are shown once and only a scrypt hash is stored in the private auth store. |
-| `auth protect <host>` | `--user`, `--password-stdin`, `--project`, `--service`; creates or rotates a protected-host record. |
-| `auth status [host]` | Read-only; never returns credential hashes. |
-| `auth unprotect <host>` | Removes the record; the consumer project's middleware label is unchanged. |
-| `auth token list\|create\|revoke` | Manage revocable Bearer tokens. `create --name --actor [--human] [--capabilities <a,b>]` prints the secret once. |
+| `auth bootstrap` | `--name`, `--email`, `--password-stdin`; creates the panel owner, once. The password is only ever read from stdin. |
+| `auth login` | `--token`; omitted, the token is read from the terminal without echoing. Checked against the panel before it is saved. |
+| `auth status` | Global flags only. Says the panel's mode and who this terminal is. |
+| `auth logout` | Global flags only. Forgets the credential; does not revoke the token. |
+| `auth whoami` | Global flags only. Never prints a token. |
+| `auth token list` | `--all` for everybody's; needs `user:list`. |
+| `auth token create` | `--name`, `--human`, `--scopes <a,b>`, `--expires-in-days`; the secret is shown once. |
+| `auth token revoke <id>` | Global flags only. Somebody else's needs `user:update`. |
+| `protect host <host>` | `--user`, `--password-stdin`, `--project`, `--service`; creates or rotates a protected-host record. |
+| `protect status [host]` | Read-only; never returns credential hashes. |
+| `protect remove <host>` | Removes the record; the consumer project's middleware label is unchanged. |
+| `auth reset-password <email>` | `--password-stdin`; otherwise a password is generated and shown once. Runs inside the panel container and ends every session of that account. |
+| `users list` | Global flags only. |
+| `users create` | `--name`, `--email`, `--role`, `--projects`, `--password-stdin`; a generated password is shown once. |
+| `users set-role <email> <role>` | Global flags only. The email is resolved to an id through the panel. |
+| `users set-password <email>` | `--password-stdin`; ends every session of that account. |
+| `users grant <email> <project>` | Global flags only. Sends the whole list, with this Project added. |
+| `users revoke <email> <project>` | Global flags only. Sends the whole list, with this Project removed. |
+| `users remove <email>` | Global flags only. |
+| `auth token list\|create\|revoke` | Personal Bearer tokens. `create --name [--human] [--scopes <a,b>] [--expires-in-days <n>]` prints the secret once; `list --all` needs `user:list`. |
 | `network status` | `--public-ip` explicitly permits one external lookup. |
 | `public status|enable|disable` | Enable needs confirmation; TCP services are never published. |
 | `dns check|status` | Read-only. |
@@ -247,7 +261,6 @@ Every read command accepts the global `--json`. Stable top-level fields are:
 | `access list` | `bridges[]` (`id`, `project`, `service`, `target_port`, `local_port`, `kind`, `expires`, `bind`, `network`, `state`) |
 | `service list` | `forwarders[]` |
 | `web status` | `enabled`, `devMode`, `readOnly`, `expose`, `url`, `panel`, `socketProxy` |
-| `web auth status` | `expose`, `mode`, `user`, `hashSet`, `middleware` |
 | `network status` | `instance`, `bindAddress`, `publicIp`, `bindings`, `publicBindings` |
 | `public status` | `enabled`, `profile`, `domain`, `bindAddress` |
 | `dns check` | `domain`, `hostname`, `addresses`, `resolves` |

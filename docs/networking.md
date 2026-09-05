@@ -98,7 +98,9 @@ Without them Traefik may pick the private address, which it cannot reach.
 
 Both parts are normalised to lowercase `[a-z0-9-]`. One subdomain level, not
 two, so a single wildcard certificate covers everything
-([ADR 0005](adr/0005-hostname-convention.md)).
+([ADR 0005](adr/0005-hostname-convention.md)). How the base is chosen, and how
+that is not the same as public access, is
+[addresses-and-access.md](addresses-and-access.md).
 
 To override, set an explicit rule. It wins over the derived hostname:
 

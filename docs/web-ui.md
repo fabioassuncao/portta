@@ -49,7 +49,7 @@ create an arbitrary container. See [Out of scope](#out-of-scope).
 ```text
 Browser
    |                              http, loopback by default
-Panel (Hono + React, one container)
+Panel (Next.js + Hono, one process, one container)
    |-- filtered Docker API, internal control network
 Panel socket proxy
    |                              read-only bind of the socket
@@ -57,9 +57,27 @@ Docker
 Panel -- durable decisions --> PostgreSQL (private data network, no host port)
 ```
 
-The panel application is a single container. In production the Node process serves both the
-JSON API and the built UI, so there is one address to remember. It joins two
-networks: the gateway's shared network (so it can be published, and routed by
+The panel application is a single container running a single Node process, and
+that process is a dispatcher over four things:
+
+```text
+/api/*        the Hono API, including the event stream
+upgrade /ws/* WebSocket, authorised before the handshake
+/*            Next's handler: the pages, their data, their assets
+```
+
+`apps/web/server/main.ts` composes them and `apps/web/server/compose.ts` decides
+which is which. One process because the panel is loopback by default with no
+proxy in front of it, a session cookie needs a single origin, and one container
+is what `portta web up` already starts.
+
+A page is a Server Component: it calls `services.*` from `portta-server`
+directly and never fetches the API this same process is serving. What it reads
+is handed to the client as `initialData`, so the first paint is the page rather
+than a spinner, and the event stream keeps it alive from there. A mutation
+always goes through `/api` — the same contract the CLI and MCP use.
+
+It joins two networks: the gateway's shared network (so it can be published, and routed by
 Traefik when that is asked for) and its own `internal` control network, where
 its socket proxy lives. A third, dedicated internal network connects only the
 panel and its PostgreSQL database.
@@ -80,11 +98,29 @@ newer daemon cannot silently change the response contract. See
 
 | Layer | Choice |
 |---|---|
-| API | Node 24, TypeScript, [Hono](https://hono.dev/), Zod for input validation |
-| UI | React 19, Vite 8, Tailwind CSS 4, Radix primitives, TanStack Query |
-| Persistence | PostgreSQL 18, SQL migrations, typed repositories |
+| Pages | [Next.js 16](https://nextjs.org/) App Router, React 19, Server Components by default |
+| Server | Node 24, TypeScript, a custom `http` server that dispatches to Next and Hono |
+| API | [Hono](https://hono.dev/), Zod for input validation, OpenAPI generated from the routes |
+| UI | Tailwind CSS 4, Radix primitives, TanStack Query, next-themes, i18next |
+| Persistence | PostgreSQL 18, Drizzle ORM, generated migrations |
 | Live updates | Server-sent events, fed by Docker's own event stream |
-| Tests | Vitest (API, core, components), Playwright (end to end) |
+| Tests | Vitest (services, API, components, schema), Playwright (end to end) |
+
+There is no Vite in the panel. The one Vite build left in the repository makes
+the login page `apps/auth` serves, which is a separate service on a separate
+origin and may not import from the panel.
+
+### Where the code lives
+
+```text
+apps/web/
+├── app/                 routes. (panel)/ has the shell; docs/ is the documentation
+├── components/          ui/ primitives, shell/, entities/, tasks/, settings/
+├── lib/                 api client, queries, live, i18n, docs collector, format
+├── messages/            en/*.json, pt-BR/*.json
+├── server/              main.ts (the process) and compose.ts (the dispatcher)
+└── public/              the favicon, and nothing that needs a request elsewhere
+```
 
 ### Shell and navigation
 
@@ -92,9 +128,9 @@ The sidebar has two groups. **Development** — Overview and Projects — is the
 daily flow; **Infrastructure** — Services, Docker, Network, Access, Gateway —
 is the technical perspective over the same host; Settings sits alone at the
 end. Each section sets a contextual browser title ending in `Portta`; a
-project, task, repository or environment route refines it with its name.
-Every new page must call `useDocumentTitle` so tabs, bookmarks and history do
-not inherit the previous page's title. The built UI also serves its SVG favicon
+project, task, repository or environment route refines it with its name. The
+title belongs to the route: every page exports `generateMetadata`, so tabs,
+bookmarks and history never inherit the previous page's title. The built UI also serves its SVG favicon
 locally, with no browser request to a third-party asset.
 
 At `md` and above, the sidebar can collapse from its 224px labelled form to a
@@ -151,32 +187,39 @@ just db-migrate              # apply pending SQL without a restart
 ./bin/portta web dev         # the panel alone, on a gateway already running
 ```
 
-Two containers from the same image: the API with `node --watch`, and Vite in
-front of it with HMR on `http://127.0.0.1:5173`. `apps/web/src`,
-`apps/web/migrations` and `packages/core/src` are bind-mounted, so the
-image's `node_modules` stay in place. Edits under `apps/web/src` reload on
-their own. A new SQL file is visible to the next `portta db migrate` (or
-the next `just dev`) without rebuilding the image. `node --watch` does not
-reload `.sql`; apply it explicitly.
+One container, one port. The panel is a single process, so Next's HMR arrives on
+the same `http://127.0.0.1:8081` the API answers on — there is no second server
+and no second port to remember.
 
-The book icon and every `/docs/#/…` deep link stay on that same port. `dev:ui`
-starts a second Vite for the documentation site (loopback :5174, no HMR) and
-the UI Vite proxies `/docs` to it, so a click never falls through to the
-panel Overview. The Markdown under `docs/`, `README.md` and `CHANGELOG.md` is
-bind-mounted; production still serves the bundle baked into the image.
+`apps/web/{app,components,lib,messages,server,public}`, `apps/auth/{src,ui}`,
+`packages/*/src`,
+`packages/db/drizzle` and the Markdown under `docs/` are bind-mounted, so the
+image's `node_modules` stay in place. An edit to a page or a component reloads
+in the browser; an edit to `server/main.ts` or the ForwardAuth backend restarts
+its process, and its login UI rebuilds in watch mode. A newly
+generated migration is visible to the next `portta db migrate` without
+rebuilding the image.
+
+The book icon and every `/docs/…` link stay on that same port: the documentation
+is a route of the panel, not a second site.
 
 `./bin/portta web up` goes back to the built image.
 
 If you do have Node on the host and prefer to work outside containers:
 
 ```bash
-npm ci                 # from the repository root; installs every workspace
-npm run dev --workspace=portta-web        # API on :8081
-npm run dev:ui --workspace=portta-web     # Vite on :5173, docs proxied from :5174
+npm ci                                          # from the repository root
+npm run dev --workspace=portta-web              # the panel on :8081
 npm test --workspace=portta-web
 npm run test:e2e --workspace=portta-web
-npm run openapi --workspace=portta-web    # refresh apps/web/openapi.json
+npm run openapi --workspace=portta-contracts    # refresh packages/contracts/openapi.json
 ```
+
+`npm run build --workspace=portta-web` is `next build` followed by an esbuild
+bundle of `server/main.ts` into `dist/server.mjs`. It needs the workspace
+packages built first (`core → contracts → db → server`): under
+`NODE_ENV=production` the `development` export condition no longer applies, so
+each resolves to its `dist/`. The image does exactly that, in that order.
 
 ### API contract
 
@@ -188,7 +231,7 @@ are all part of the document. It declares the host-scoped Portta session and
 the HTTP Basic compatibility path for non-browser clients. Traefik asks the
 separate auth process to enforce either one before a request reaches the panel.
 
-`http://127.0.0.1:8081/docs/#/api` renders that document: operations grouped by
+`http://127.0.0.1:8081/docs/api` renders that document: operations grouped by
 tag, resolved schemas for parameters, request bodies and responses, the
 declared security schemes, and a console. `/api/docs` redirects there, so a
 bookmark keeps working.
@@ -204,17 +247,22 @@ returns 404 unless `PORTTA_RUNTIME_API_DOCS=true` explicitly opts in. The JSON
 contract stays available because a caller that reached the API can already
 inspect it.
 
-`apps/web/openapi.json` is checked in so an API change is visible in review.
-`npm run openapi:check` regenerates it in memory and fails on byte-level drift.
-Adding or changing a route therefore requires updating its attached description
-and running `npm run openapi`.
+`packages/contracts/openapi.json` is checked in so an API change is visible in
+review. `npm run openapi:check --workspace=portta-contracts` regenerates it in
+memory and fails on byte-level drift. Adding or changing a route therefore
+requires updating its attached description and running
+`npm run openapi --workspace=portta-contracts`.
 
 ### The documentation, served from the panel
 
 `http://127.0.0.1:8081/docs` is this documentation — every file under `docs/`
-including the ADRs, plus the README and the changelog — rendered into the panel
-image at build time, with a sidebar, an on-page table of contents, search, and
-both themes. The book icon beside the language and theme controls opens it.
+including the ADRs, plus the README and the changelog — rendered at build time
+into static pages, with a sidebar, search and both themes. The book icon beside
+the language and theme controls opens it.
+
+They are ordinary routes of the panel (`app/docs/[[...slug]]`), prerendered by
+`generateStaticParams`, so a deep link is a real URL a server can answer and a
+browser can bookmark.
 
 The source of truth does not move: `docs/*.md` stays ordinary Markdown, readable
 on GitHub, with no front matter and no second copy. The navigation is the
@@ -232,7 +280,7 @@ A fence that fails to parse stays as the source.
 
 Because the build reads every link, it is also the link checker this repository
 did not have: a link that names a documentation page which does not exist fails
-`npm run build:docs`.
+`npm run build --workspace=portta-web`.
 
 Two switches, independent on purpose:
 
@@ -286,47 +334,36 @@ The private profile routes it through Traefik, which on that profile listens on
 the tailnet and nowhere else:
 
 ```bash
-./bin/portta web auth set
+./bin/portta config set panel.auth required
 ./bin/portta web up --expose vpn
 # https://portta-web.vpn.example.com
 ```
 
-This adds a Traefik router for `PORTTA_WEB_HOST.<domain>` and the Portta
-ForwardAuth middleware in front of it. It is refused on the `remote-public`
-profile, where that private router would be public, and it is refused without
-a credential: a routed panel can stop and remove every container on the host.
+This adds a Traefik router for `PORTTA_WEB_HOST.<domain>`. It is refused on the
+`remote-public` profile, where that private router would be public, and it is
+refused while `PORTTA_AUTH_MODE` is `disabled`: a routed panel can stop and
+remove every container on the host, and it would answer anybody who found it.
 
 A routed panel also defaults to read-only. `--writable` opts out, deliberately.
 
-### The credential
+### Signing in
+
+The panel signs people in itself. On a routed panel, `PORTTA_AUTH_MODE=required`
+means the first visit lands on `/setup`, which creates the owner — the only
+account that is ever created that way. Everybody after that is created by an
+administrator, and each of them has a role that decides what they may do.
 
 ```bash
-./bin/portta web auth set
-#   user      dev
-#   password  K7RXQ-M4WPD-J9TCF-B2NHY
-# warn this is the only time the password is shown; only its hash is stored
+# from the host, when there is no browser on it
+printf %s "$PASSWORD" | ./bin/portta auth bootstrap \
+  --name 'Ada Lovelace' --email ada@example.com --password-stdin
 ```
 
-The password is generated (twenty characters over a thirty-two symbol alphabet,
-so about a hundred bits), shown exactly once, and stored as scrypt in the
-owner-only `state/auth/protections.json`. Nothing puts it on a command line,
-where `ps` would show it to every user on the host. Use `--password-stdin` to
-supply your own, and `--user` to change the name.
-
-Traefik hot-reloads the dynamic directory, so a running panel needs no restart.
-
-```bash
-./bin/portta web auth          # is it protected, and as whom
-./bin/portta web auth apply    # re-render the middleware from .env
-./bin/portta web auth clear    # refused while the panel is routed
-```
-
-None of this check lives in the panel. The separate `portta-auth` process serves
-the login, validates the credential and issues a host-only session before the
-request reaches any panel route handler. Logging out clears that session;
-rotating the credential invalidates all sessions for this host. See
-[Authentication](authentication.md) and
-[ADR 0027](adr/0027-forward-authentication-service.md).
+The session is a cookie the panel issues and can revoke; banning somebody takes
+effect on their next request. A CLI or a coding agent carries a `ptt_` token
+instead, which never holds more than its owner's role. Nothing in front of the
+panel decides any of this. See [Authentication](authentication.md) and
+[ADR 0035](adr/0035-authentication-lives-in-the-panel.md).
 
 ### Public exposure
 
@@ -411,6 +448,13 @@ diagnostics still answer. It is served by `GET /api/overview`, which
 
 ### Projects
 
+Every page below is a route, not a tab held in memory: `/projects`,
+`/projects/<slug>`, `/projects/<slug>/tasks`, and so on. Each one is a link
+somebody can paste, a bookmark that survives a reload, and a step the browser's
+back button walks. What a role may not do is not shown rather than shown
+disabled — the exception is a task's own controls, which stay visible and
+inert, because a task's status is information a viewer came to read.
+
 ![Projects as cards: each with its state, its counts, its last commit and the actions its state allows](images/panel-projects.png)
 
 The products you recognise, as cards or as a table: repositories, open tasks,
@@ -452,7 +496,7 @@ below it, tabs that are URLs:
 
 ![The Demo Shop task board: backlog, to do, in progress and blocked, seeded from docker/examples](images/panel-tasks.png)
 
-A task is Portta's own: it exists without GitHub. `#/projects/<slug>/tasks` is
+A task is Portta's own: it exists without GitHub. `/projects/<slug>/tasks` is
 the board — six columns, `Backlog`, `To do`, `In progress`, `Review`,
 `Blocked`, `Done` — or the list, nested by parent; the choice and the filters
 (status, assignee, repository, text) live in the hash, so a filtered view is
@@ -468,7 +512,7 @@ nested under their parent until a column is sorted on.
 
 ![One task: the status control, the next step it offers, the description, its attachments, subtasks, sessions and activity](images/panel-task.png)
 
-A task page, `#/projects/<slug>/tasks/<id>`, carries the description, the
+A task page, `/projects/<slug>/tasks/<id>`, carries the description, the
 subtasks, the notes, the sessions working on it and their commits, the
 environments it runs in (linked by the `portta.task` label, the branch name,
 the namespace, or by hand) and the GitHub binding: which issue, whether the
@@ -482,7 +526,7 @@ conflict either way, unbind, comment on the issue. See
 
 ### Repositories
 
-`#/projects/<slug>/repositories/<id>` is one repository: branch, HEAD, the
+`/projects/<slug>/repositories/<id>` is one repository: branch, HEAD, the
 working tree spelled out, ahead/behind, the remote, the directory on the host,
 and three tabs — the overview with open pull requests and the environments
 running from it, the last twenty commits, and the **instruction files** the
@@ -497,10 +541,19 @@ carries the command that refreshes it. See
 
 ### Environments
 
+`/environments` lists them; `/environments/<name>` is one, with `logs` and
+`settings` as routes beside it. The rail shows Docker, Network and Gateway only
+to somebody who holds `docker:read` or `gateway:read` — a navigation entry that
+would answer 404 is a worse answer than no entry. Starting, stopping and
+restarting need `environment:operate`; rebuilding, removing and forgetting need
+`environment:destroy`; the overrides form needs `environment:settings`. Reading
+logs is `logs:read`, which a viewer has: they can watch what is happening and
+change none of it.
+
 ![The Environments page: every Compose project on this host, each as a table of its services with state, access, resources, runtime and actions](images/panel-environments.png)
 
-`#/environments` lists every Compose project on this host, adopted or not,
-each as a table of its services. `#/environments/<name>` is one environment:
+`/environments` lists every Compose project on this host, adopted or not,
+each as a table of its services. `/environments/<name>` is one environment:
 
 ![One environment: its services as one table, with an Open / Test menu, resources and actions per row](images/panel-environment.png)
 
@@ -521,7 +574,7 @@ datastore the loopback bridge to open or close, the host, the port and a
 connection string. It is the same model the Access page manages
 ([ADR 0024](adr/0024-capabilities-providers-endpoints.md)).
 
-An old `#/environments/<name>/services` opens the overview; `#/…/git` opens
+An old `/environments/<name>/services` opens the overview; `/…/git` opens
 the repository the environment runs from.
 
 #### Remembered environments
@@ -551,7 +604,7 @@ postgres | 10:00:03  ready to accept connections
 ```
 
 A selector narrows the view to one service, and the choice is in the URL
-(`#/environments/alpha/logs?service=api`), so a link opens on exactly what you were
+(`/environments/alpha/logs?service=api`), so a link opens on exactly what you were
 reading. Tail size, the text filter, follow, timestamps and copy are the same
 controls the service drawer has, because it is the same component; copying an
 aggregated view prefixes each line with its service.
@@ -792,22 +845,105 @@ cannot see truthfully. The panel says so and points at the command.
 
 ### Settings
 
-The settings people actually change, from a fixed catalogue: domains, ports,
-bind address, profile, TLS and ACME, Tailscale, public access, DNS provider,
-and the panel's own options. Each server-defined group has a stable deep link,
-such as `#/settings/tls` or `#/settings/public-access`. Moving between groups
-keeps one shared draft; badges identify unsaved work in another group and Save
-writes every changed key in one transaction. A key that is not in the
-catalogue cannot be read or written through the API, whatever a request asks
-for.
+Settings is a place with six sections, and which of them somebody sees depends
+on what they hold. The rail lists only the ones they can open; `/settings`
+itself redirects to the first of them, so an owner lands on General and a viewer
+lands on their own tokens. A panel in `open` mode has no accounts, so Users,
+API tokens, Security and Audit are not offered at all — and a bookmark into one
+of them says the panel is local rather than showing an empty table.
+
+| Section | What it is | Who has it |
+|---|---|---|
+| General | How Portta names projects, who can reach them, and how this panel is reached | `settings:read` |
+| Users | Accounts, roles, Project access, ownership | `user:list` |
+| API tokens | The credentials that are not a browser | `token:read` |
+| Security | Your own password, second factor and sessions | anybody signed in |
+| Integrations | GitHub: the connection and its keys | `github:read` |
+| Audit | Who did what, newest first | `audit:read` |
+
+**General** is the settings people actually change. The groups follow three
+decisions that stay independent: how projects are named, who can reach Traefik,
+and how this panel is reached. The conceptual map is
+[addresses-and-access.md](addresses-and-access.md). Each group has a stable
+deep link, such as `/settings/general/tls` or
+`/settings/general/project-access`. Moving between groups keeps one shared
+draft; badges identify unsaved work in another group and Save writes every
+changed key in one transaction. A key that is not in the catalogue cannot be
+read or written through the API, whatever a request asks for.
+
+Gateway, public access and VPN are one **Project access** group. The form writes
+their existing environment keys together so an operator cannot select a public
+profile while leaving the public access decision or bind address behind.
 
 The Traefik group shows the dashboard's status, every address that applies,
-and an Open action that is enabled only when an endpoint is usable. Changing
+and an Open action that is enabled only when an endpoint is usable. The
+dashboard stays on loopback under the normal host attachment: it has no login
+of its own. The panel warns when a Tailscale attachment also exposes it on the
+tailnet. Changing
 `PORTTA_DASHBOARD` needs the gateway recreated; the apply bar at the bottom
-is how that happens. `PORTTA_DASHBOARD_EXPOSE=domain` puts the dashboard on
-the derived hostname behind the same login as the panel.
+is how that happens.
+
+The Panel group also carries **what a local agent may do**: the
+`agentPermissions` setting, ticked one permission at a time, with the default
+in force until somebody narrows it. It is a ceiling over a request that
+announces itself with `X-Portta-Actor` — it can only take away from what the
+person behind it holds, never add.
+
+**Users** lists who can sign in with their role, whether the account is usable,
+and the Projects it reaches. Creating one hands over the first password on the
+spot: this panel sends no email. The row menu carries the role, a password
+reset, Project access, the open sessions, the ban and the removal — each of
+them absent rather than disabled when the rule behind it would refuse
+([Authentication](authentication.md#the-rules-a-role-cannot-express)). Removing
+asks for the email to be typed. Transferring ownership is offered to the owner
+alone, and never on their own row.
+
+**API tokens** shows yours by default; an administrator can switch to
+everybody's. A new token's secret appears once, in a dialog that does not close
+on an escape key: the panel keeps a hash, so a lost secret means making another
+token. Revoking says what stops working before it does it.
+
+**Security** is your own account. Changing your password signs you out of every
+other browser. Turning on a second factor asks for your password, shows the QR
+code (and the secret, for an app that cannot scan it), verifies one code from
+the app, and then shows the backup codes once. The session list marks the
+browser you are reading it in and signs the others out one at a time.
+
+**Audit** is who did what: accounts, roles, tokens, Project membership,
+settings, and every lifecycle operation on an environment or a container.
+Newest first, filtered by account, paged backwards. Development activity —
+tasks, work sessions, commits — is not in it and lives on the Activity page
+instead, and nothing that authenticates anything is in it either
+([security](security.md#the-audit-log)).
 
 ![The Gateway settings group: a stable group navigation beside each field, the key it writes and what it means](images/panel-settings.png)
+
+### Live updates
+
+Two channels, and they carry different things.
+
+**The event stream** (`GET /api/events`, server-sent events) is what keeps the
+pages current: a container changed state, a task moved, a repository was
+scanned. It needs `activity:read`, and every event is filtered against the
+principal it belongs to — an event about a Project somebody does not reach is
+not delivered late or redacted, it is not delivered. Events with no Project in
+them at all (a settings change, a gateway restart) go only to the people who
+see everything. The browser reconnects on its own; the panel sends a keepalive
+every twenty seconds so a proxy does not close a quiet stream.
+
+**The log stream** (`/ws/environments/:name/logs`) is a WebSocket, because
+following a log is a stream and polling for it was three requests for the same
+lines every three seconds. Pressing **Follow** opens one connection and the
+lines arrive as Docker emits them. It reconnects with a widening delay, says so
+while it is trying, and falls back to the polling it replaced when it cannot
+stay up.
+
+The handshake is authorised before it becomes a socket: `logs:read`, scoped to
+whichever Project adopted the environment. A refusal is an HTTP status —
+`401` with no credential, `403` without the permission or the Project, `404`
+for a path or an environment that is not there — and the socket is closed
+rather than left open. One listener handles every `/ws/…` path, so a path no
+route claims is refused there rather than falling through to Next.
 
 ### Light and dark
 
@@ -915,8 +1051,7 @@ All of these live in `.env`; `portta web up` sets the first ones for you.
 | `PORTTA_WEB_EXPOSE` | `local` | `local`, or `vpn` to add a Traefik router |
 | `PORTTA_WEB_HOST` | `portta-web` | Hostname label used by `--expose vpn` |
 | `PORTTA_WEB_READ_ONLY` | `false` | Refuse every mutating endpoint |
-| `PORTTA_WEB_DEV` | `false` | Development mode, with Vite in front |
-| `PORTTA_WEB_DEV_PORT` | `5173` | Vite's port in development mode |
+| `PORTTA_WEB_DEV` | `false` | Development mode: HMR on the same port the API answers on |
 | `PORTTA_WEB_NETWORK` | `portta-web` | The panel's internal control network |
 | `PORTTA_WEB_USER` | `node` | User the container runs as, see below |
 
@@ -933,8 +1068,9 @@ happens to be 1000 — on macOS it is usually 501, so the default was wrong ther
 as well, not only on Linux. The panel reports whether the file is writable and
 says to edit it on the host when it is not.
 
-Vite, in development mode, deliberately keeps running as `node`: it writes no
-host file and does write inside the image, where only `node` has permission.
+In development mode the container keeps running as `node` on purpose: it writes
+no host file, and it does write inside the image, where only `node` has
+permission.
 
 ---
 

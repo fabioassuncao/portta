@@ -1,22 +1,17 @@
-import { randomBytes } from 'node:crypto'
-import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
+import { patchEnvFile, prepareEnvFile } from 'portta-core'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  hashPassword,
   PANEL_ACCESS_MODES,
-  dashboardProtectionRecord,
-  panelProtectionRecord,
   isPanelAccess,
   isTrue,
-  readEnvFile,
   readProtectionStore,
   removeProtection,
   renderAuthDynamic,
   renderPanelAuth as renderSharedPanelAuth,
-  setEnvValue,
-  setProtection,
   writeEnvFile,
   writeProtectionStore,
+  porttaImages,
 } from 'portta-core'
 import type { Command } from 'commander'
 import { composeArguments, gatewayContext } from '../context.js'
@@ -24,6 +19,7 @@ import { ensureNetwork, inspectContainers } from '../docker.js'
 import { CliError, EXIT, PreconditionError, RefusedError, UsageError } from '../errors.js'
 import { Output } from '../output.js'
 import { runProcess } from '../process.js'
+import { requireLocalRelease, selectLocalRelease } from '../local-release.js'
 import { refreshRepositories } from './repos.js'
 import { ensureMetricsCollector, stopMetricsCollector } from './host.js'
 
@@ -31,43 +27,26 @@ function globals(command: Command) { return command.optsWithGlobals() as { json?
 
 function setValues(root: string, values: Record<string, string>): void {
   const path = join(root, '.env')
-  let text = readEnvFile(path)
-  for (const [key, value] of Object.entries(values)) text = setEnvValue(text, key, value)
-  writeEnvFile(path, text)
+  patchEnvFile(path, values)
 }
 
-export function syncPanelProtection(root: string, overrides: Record<string, string> = {}): void {
-  const context = gatewayContext({ root, overrides })
+/**
+ * Traefik's two Portta-owned files, written from the host.
+ *
+ * The panel signs people in itself, so neither it nor the Traefik dashboard has
+ * a record here any more; a store written by an older Portta still does, and
+ * those are removed. What remains is ForwardAuth for project hostnames and
+ * shares, which is what `portta protect` writes.
+ */
+export function syncForwardAuth(root: string): void {
   const storePath = join(root, 'state/auth/protections.json')
   const current = readProtectionStore(storePath)
-  const record = panelProtectionRecord({
-    mode: context.env['PORTTA_WEB_AUTH'] ?? 'none', expose: context.env['PORTTA_WEB_EXPOSE'] ?? 'local',
-    user: context.env['PORTTA_WEB_AUTH_USER'] ?? '', hash: context.env['PORTTA_WEB_AUTH_HASH'] ?? '',
-    webHost: context.env['PORTTA_WEB_HOST'] ?? 'portta-web', domain: context.config.domain,
-    advertisedHost: context.env['PORTTA_PANEL_ADVERTISED_HOST'] || context.env['PORTTA_PUBLIC_IP'] || null,
-    port: context.env['PORTTA_WEB_PORT'] ?? '8081', tlsEnabled: context.config.tlsEnabled,
-    projectName: context.config.projectName,
-  })
-  const existing = current.protections.find((protection) => protection.scope === 'panel')
-  const same = record && existing
-    ? JSON.stringify({ ...existing, epoch: undefined }) === JSON.stringify({ ...record, epoch: undefined })
-    : record === null && existing === undefined
-  let next = same ? current : record ? setProtection(current, record) : removeProtection(current, 'panel')
-  const dashboard = dashboardProtectionRecord({
-    expose: context.env['PORTTA_DASHBOARD_EXPOSE'] ?? 'local',
-    advertisedHost: context.config.dashboardAdvertisedHost,
-    mode: context.env['PORTTA_WEB_AUTH'] ?? 'none',
-    user: context.env['PORTTA_WEB_AUTH_USER'] ?? '',
-    hash: context.env['PORTTA_WEB_AUTH_HASH'] ?? '',
-    tlsEnabled: context.config.tlsEnabled,
-    projectName: context.config.projectName,
-  })
-  next = dashboard ? setProtection(next, dashboard) : removeProtection(next, 'dashboard')
+  const next = removeProtection(removeProtection(current, 'panel'), 'dashboard')
   writeProtectionStore(storePath, next)
   const dynamic = join(root, 'config/traefik/dynamic')
   mkdirSync(dynamic, { recursive: true })
   writeEnvFile(join(dynamic, 'portta-auth.yaml'), renderAuthDynamic(next))
-  writeEnvFile(join(dynamic, 'portta-panel.yaml'), renderSharedPanelAuth(null))
+  writeEnvFile(join(dynamic, 'portta-panel.yaml'), renderSharedPanelAuth())
 }
 
 /**
@@ -84,7 +63,18 @@ async function webCompose(command: Command, args: string[], extraEnv: NodeJS.Pro
   return runProcess('docker', ['compose', ...composeArguments(context), ...args], { cwd: context.root, env: { ...context.env, ...extraEnv }, stdio })
 }
 
-export async function webUp(options: { expose?: string; port?: string; readOnly?: boolean; writable?: boolean; dev?: boolean }, command: Command): Promise<void> {
+export interface WebUpOptions { localRelease?: boolean; expose?: string; port?: string; readOnly?: boolean; writable?: boolean; dev?: boolean }
+
+export interface PreparedWebUp {
+  context: ReturnType<typeof gatewayContext>
+  values: Record<string, string>
+  output: Output
+}
+
+/** Persist and resolve everything the panel needs before Compose converges. */
+export function prepareWebUp(options: WebUpOptions, command: Command): PreparedWebUp {
+  prepareEnvFile(join(gatewayContext({ profile: globals(command).profile }).root, '.env'))
+  if (options.localRelease) selectLocalRelease(gatewayContext({ profile: globals(command).profile }))
   const initial = gatewayContext({ profile: globals(command).profile })
   const expose = options.expose ?? initial.config.webExpose
   if (!isPanelAccess(expose)) throw new UsageError(`--expose must be one of: ${PANEL_ACCESS_MODES.join(', ')}`)
@@ -102,35 +92,40 @@ export async function webUp(options: { expose?: string; port?: string; readOnly?
         'portta config set panel.host portta.example.com')
     }
     if (!initial.config.tlsEnabled) {
-      throw new RefusedError("a panel routed on the domain would carry its credential in clear text",
+      throw new RefusedError("a panel routed on the domain would carry its session cookie in clear text",
         'enable TLS first: portta config set tls.enabled true')
     }
   }
-  const authConfigured = initial.env['PORTTA_WEB_AUTH'] === 'basic' && Boolean(initial.env['PORTTA_WEB_AUTH_USER']) && Boolean(initial.env['PORTTA_WEB_AUTH_HASH'])
-  // Anything the panel can be reached on from another machine sits behind the
-  // Traefik middleware first. `local` and `tailscale` publish a host port and
-  // are governed by the interface they bind, not by a credential.
-  if ((expose === 'vpn' || expose === 'public' || expose === 'domain') && !authConfigured) throw new RefusedError(`panel access '${expose}' needs a credential`, 'run portta web auth set first')
+  // Anything the panel can be reached on from another machine has to ask who is
+  // asking. `local` is the only mode that does not: it publishes on loopback,
+  // where reaching the panel already means having the machine. `tailscale`
+  // binds the node's tailnet address, which is another machine's reach.
+  //
+  // The panel's own process refuses the same combination at boot. This refusal
+  // exists so the answer arrives before the container is started, with the
+  // command that fixes it.
+  const protectedPanel = initial.env['PORTTA_AUTH_MODE'] === 'required'
+  if (expose !== 'local' && !protectedPanel) {
+    throw new RefusedError(
+      `panel access '${expose}' needs the panel to sign people in`,
+      'portta config set panel.auth required',
+    )
+  }
   const readOnly = options.writable ? false : options.readOnly ?? (expose === 'vpn' ? true : initial.config.webReadOnly)
   const values: Record<string, string> = {
-    PORTTA_WEB: 'true', PORTTA_WEB_EXPOSE: expose, PORTTA_WEB_READ_ONLY: String(readOnly), PORTTA_WEB_DEV: String(options.dev === true),
+    PORTTA_WEB: 'true', PORTTA_WEB_EXPOSE: expose, PORTTA_WEB_READ_ONLY: String(readOnly), PORTTA_WEB_DEV: String(options.dev ?? initial.config.webDev),
   }
   if (options.port) values['PORTTA_WEB_PORT'] = String(Number(options.port))
-  if (!initial.env['PORTTA_RUNTIME_DB_PASSWORD']) values['PORTTA_RUNTIME_DB_PASSWORD'] = randomBytes(32).toString('hex')
-  if (!initial.env['PORTTA_AUTH_SECRET']) values['PORTTA_AUTH_SECRET'] = randomBytes(32).toString('hex')
-  // The Settings page writes .env, and .env is owner-only, so the container has
-  // to run as whoever owns it. The installer records this; starting the panel
-  // from a checkout had nothing that did, so it fell back to the image's `node`
-  // (uid 1000) and could not write a file owned by anyone else. Only set when
-  // the platform reports a uid: on Windows process.getuid is undefined.
-  if (!initial.env['PORTTA_WEB_USER'] && typeof process.getuid === 'function') {
-    values['PORTTA_WEB_USER'] = `${process.getuid()}:${process.getgid?.() ?? 0}`
-  }
-  // The authentication service has the same problem for the same reason: it
-  // reads .env once and the owner-only protection store on every request.
-  if (!initial.env['PORTTA_AUTH_USER'] && typeof process.getuid === 'function') {
-    values['PORTTA_AUTH_USER'] = `${process.getuid()}:${process.getgid?.() ?? 0}`
-  }
+  // Where a browser reaches the panel, decided here because the exposure is
+  // decided here. Three things read it: whether the session cookie may be
+  // `Secure`, which origins a write is accepted from, and the address the
+  // panel prints. Getting it wrong on a routed panel means a cookie that is
+  // never sent back, which looks exactly like a password that does not work.
+  if (!initial.env['PORTTA_PANEL_URL'] || options.expose || options.port) values['PORTTA_PANEL_URL'] = panelUrlFor(
+    initial,
+    expose,
+    options.port ? String(Number(options.port)) : String(initial.config.webPort),
+  )
   setValues(initial.root, values)
   mkdirSync(join(initial.root, 'state/git'), { recursive: true })
   mkdirSync(join(initial.root, 'state/github'), { recursive: true })
@@ -139,22 +134,36 @@ export async function webUp(options: { expose?: string; port?: string; readOnly?
   mkdirSync(join(initial.root, 'state/auth'), { recursive: true, mode: 0o700 })
   chmodSync(join(initial.root, 'state/auth'), 0o700)
   mkdirSync(join(initial.root, 'config/traefik/dynamic'), { recursive: true })
-  syncPanelProtection(initial.root, values)
+  syncForwardAuth(initial.root)
   // The values just written win over anything inherited: a PORTTA_WEB=false in
   // the environment would otherwise drop the panel overlays and leave Compose
   // starting a service that no longer exists in its file list.
   const context = gatewayContext({ profile: globals(command).profile, overrides: values })
   const output = new Output(globals(command))
+  return { context, values, output }
+}
+
+export async function webUp(options: WebUpOptions, command: Command): Promise<void> {
+  const prepared = prepareWebUp(options, command)
+  const { context, output } = prepared
+  if (options.localRelease) context.env['PORTTA_LOCAL_RELEASE'] = 'true'
   output.step('panel')
+  if (!options.dev) await requireLocalRelease(context)
   await ensureNetwork(context.config.network)
   // Both of these were silent and both can be slow: a cold pull, and — right
   // after `reset` removed the volume — initialising a fresh Postgres cluster.
   // `reject: false` on the second one meant a failure produced no output at all.
   output.progress('pulling alpine/socat:1.8.1.3')
   await runProcess('docker', ['pull', 'alpine/socat:1.8.1.3'], { reject: false, stdio: 'stream' })
-  output.progress('starting the panel database')
-  await runProcess('docker', ['compose', ...composeArguments(context), 'up', '-d', 'db'], { cwd: context.root, env: context.env, reject: false, stdio: 'stream' })
-  const services = options.dev ? ['portta-auth', 'web', 'web-ui', 'web-socket-proxy'] : ['portta-auth', 'web', 'web-socket-proxy']
+  if (context.config.databaseMode === 'managed') {
+    output.progress('starting the panel database')
+    await runProcess('docker', ['compose', ...composeArguments(context), 'up', '-d', '--wait', '--wait-timeout', '120', 'db'], { cwd: context.root, env: context.env, stdio: 'stream' })
+  }
+  // The same three in both modes. There used to be a fourth, `web-ui`, running
+  // Vite in front of the panel; the panel is one process now, and naming a
+  // service the file list no longer defines makes Compose refuse the whole
+  // `up` — which is how `web dev` stopped working without anybody noticing.
+  const services = ['portta-auth', 'web', 'web-socket-proxy']
   // `--remove-orphans`, as `portta up` already does: leaving development
   // mode drops docker/compose/features/web-dev.yaml from the file list, and without this the
   // Vite container keeps serving a stale panel on its own port.
@@ -174,8 +183,16 @@ export async function webUp(options: { expose?: string; port?: string; readOnly?
       'portta web logs   shows what it is doing; portta doctor checks the rest',
     )
   }
-  await refreshRepositories(context.config.profile, output)
-  await ensureMetricsCollector(context.config.profile, output)
+  await finishWebUp(prepared, command)
+}
+
+/** Report and migrate after either `web up` or the full `dev` convergence. */
+export async function finishWebUp(prepared: PreparedWebUp, command: Command, refreshHost = true): Promise<void> {
+  const { context, values, output } = prepared
+  if (refreshHost) {
+    await refreshRepositories(context.config.profile, output)
+    await ensureMetricsCollector(context.config.profile, output)
+  }
   const running = gatewayContext({ profile: globals(command).profile, overrides: values })
   try {
     const result = await requestPanelMigrate(running)
@@ -187,7 +204,16 @@ export async function webUp(options: { expose?: string; port?: string; readOnly?
   }
   // The context was resolved before .env was rewritten, so `web dev` would
   // otherwise report the URL the previous mode used.
-  output.data(webUrl(running))
+  const url = webUrl(running)
+  // A panel that signs people in has one page until somebody creates the owner,
+  // and knowing which one is the difference between an install that finished
+  // and one that appears to have started something unreachable.
+  const state = await panelSetupState(panelLoopbackApiUrl(running))
+  if (state?.setupRequired) {
+    output.progress(`this panel has no owner yet: open ${url}/setup to create it`)
+    output.hint('portta auth bootstrap --email you@example.com   creates it from this host instead')
+  }
+  output.data(url)
 }
 
 /**
@@ -208,24 +234,40 @@ export interface PanelMigrateResult {
   migrations: string[]
 }
 
+const PANEL_WAIT_MS = 120_000
+const PANEL_POLL_MS = 500
+
+export async function waitForPanelLoopback(
+  context: ReturnType<typeof gatewayContext>,
+  timeoutMs = PANEL_WAIT_MS,
+): Promise<void> {
+  const url = `${panelLoopbackApiUrl(context)}/api/health`
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(3000) })
+      if (response.ok || response.status === 401) return
+    } catch { /* still starting */ }
+    await new Promise((resolve) => setTimeout(resolve, PANEL_POLL_MS))
+  }
+  throw new PreconditionError('the panel is not reachable', 'run portta web up')
+}
+
 export async function requestPanelMigrate(
   context: ReturnType<typeof gatewayContext>,
 ): Promise<PanelMigrateResult> {
+  await waitForPanelLoopback(context)
   const url = `${panelLoopbackApiUrl(context)}/api/database/migrate`
   let response: Response | undefined
-  for (let attempt = 0; attempt < 6; attempt++) {
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-        signal: AbortSignal.timeout(60_000),
-      })
-      break
-    } catch {
-      if (attempt === 5) throw new PreconditionError('the panel is not reachable', 'run portta web up')
-      await new Promise((resolve) => setTimeout(resolve, 400))
-    }
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(60_000),
+    })
+  } catch {
+    throw new PreconditionError('the panel is not reachable', 'run portta web up')
   }
   const body = await response!.json().catch(() => ({})) as {
     error?: string
@@ -245,10 +287,9 @@ export async function requestPanelMigrate(
 /**
  * Where the panel actually answers.
  *
- * In development Vite owns the port and proxies `/api` to the server beside
- * it; the server's own port serves no UI at all, because the dev image never
- * builds one. Reporting 8081 there sends people to a page that only explains
- * itself.
+ * One port in every mode, development included: the panel is one process, and
+ * HMR arrives on the same port the API does. There used to be a Vite container
+ * on 5173 in front of it, and this function used to report that port.
  */
 export function webUrl(context: ReturnType<typeof gatewayContext>): string {
   if (context.config.webExpose === 'vpn') return `${context.config.tlsEnabled ? 'https' : 'http'}://${context.env['PORTTA_WEB_HOST'] ?? 'portta-web'}.${context.config.domain}`
@@ -262,23 +303,70 @@ export function webUrl(context: ReturnType<typeof gatewayContext>): string {
     return `http://${advertised ?? '<this-host>'}:${context.config.webPort}`
   }
   const host = context.env['PORTTA_WEB_BIND_ADDRESS'] ?? '127.0.0.1'
-  const port = context.config.webDev
-    ? (context.env['PORTTA_WEB_DEV_PORT'] ?? '5173')
-    : context.config.webPort
+  return `http://${host}:${context.config.webPort}`
+}
+
+/**
+ * The origin a browser will actually be on, for PORTTA_PANEL_URL.
+ *
+ * Nearly `webUrl`, and deliberately not the same function: that one is written
+ * for a person to read and says `<this-host>` when the address is not knowable.
+ * This one has to parse as a URL, so where the host is unknown it falls back to
+ * loopback and the operator adds the real origin to
+ * PORTTA_PANEL_TRUSTED_ORIGINS. Everything the panel derives from it — whether
+ * the session cookie may be `Secure`, which origins a sign-in is accepted from
+ * — is wrong in a way that looks like a broken password if this is wrong.
+ */
+export function panelUrlFor(
+  context: ReturnType<typeof gatewayContext>,
+  expose: string,
+  port: string,
+): string {
+  const scheme = context.config.tlsEnabled ? 'https' : 'http'
+  if (expose === 'domain') {
+    return `${scheme}://${context.env['PORTTA_PANEL_ADVERTISED_HOST'] ?? context.config.domain}`
+  }
+  if (expose === 'vpn') {
+    return `${scheme}://${context.env['PORTTA_WEB_HOST'] ?? 'portta-web'}.${context.config.domain}`
+  }
+  if (expose === 'public') {
+    const advertised = context.env['PORTTA_PANEL_ADVERTISED_HOST'] || null
+    return advertised ? `http://${advertised}:${port}` : `http://127.0.0.1:${port}`
+  }
+  const bind = context.env['PORTTA_WEB_BIND_ADDRESS'] ?? '127.0.0.1'
+  const host = bind === '0.0.0.0' || bind === '::' || bind === '[::]' ? '127.0.0.1' : bind
   return `http://${host}:${port}`
 }
 
+/**
+ * Whether this panel still has to be set up, and where.
+ *
+ * `GET /api/auth/status` is public in both modes and is the only thing that can
+ * answer it: the owner lives in the database, not in `.env`. A panel that does
+ * not answer is not an error here — `up` has already reported that — so this
+ * returns null and the caller stays quiet.
+ */
+export async function panelSetupState(apiUrl: string): Promise<{ mode: string; setupRequired: boolean } | null> {
+  try {
+    const response = await fetch(`${apiUrl}/api/auth/status`, { signal: AbortSignal.timeout(5_000) })
+    if (!response.ok) return null
+    const body = await response.json() as { mode?: string; setupRequired?: boolean }
+    if (typeof body.mode !== 'string') return null
+    return { mode: body.mode, setupRequired: body.setupRequired === true }
+  } catch {
+    return null
+  }
+}
+
 export async function webDown(command: Command): Promise<void> {
-  // Both overlays, so the file list names every service this stops: the dev
-  // pair exists only while PORTTA_WEB_DEV is on, and leaving it out is how a
-  // Vite container survives `web down` and keeps serving a stale panel.
+  // The dev overlay is in the file list either way, because the panel container
+  // it defines is the same one: a checkout that was last started with
+  // `web dev` has to be stopped by a `web down` that resolves the same file.
   const context = gatewayContext({ profile: globals(command).profile, overrides: { ...PANEL_OVERRIDES, PORTTA_WEB_DEV: 'true' } })
   const env = { ...context.env, PORTTA_WEB: 'true', PORTTA_WEB_DEV: 'true' }
   const services = ['db', 'web', 'web-socket-proxy']
   await runProcess('docker', ['compose', ...composeArguments({ ...context, env }), 'stop', ...services], { cwd: context.root, env, reject: false })
   await runProcess('docker', ['compose', ...composeArguments({ ...context, env }), 'rm', '-f', ...services], { cwd: context.root, env, reject: false })
-  await runProcess('docker', ['compose', ...composeArguments({ ...context, env }), 'stop', 'web-ui'], { cwd: context.root, env, reject: false })
-  await runProcess('docker', ['compose', ...composeArguments({ ...context, env }), 'rm', '-f', 'web-ui'], { cwd: context.root, env, reject: false })
   const output = new Output(globals(command))
   stopMetricsCollector(globals(command).profile, output)
   output.progress('panel stopped; gateway and projects were not touched')
@@ -293,14 +381,21 @@ export async function webDisable(command: Command): Promise<void> {
 export async function webRestart(command: Command): Promise<void> { await webCompose(command, ['restart', 'web', 'web-socket-proxy']) }
 export async function webLogs(service: string | undefined, command: Command): Promise<void> {
   const target = service ?? 'web'
-  if (!['web', 'web-ui', 'web-socket-proxy', 'db', 'portta-auth'].includes(target)) throw new UsageError(`unknown panel service: ${target}`)
+  if (!['web', 'web-socket-proxy', 'db', 'portta-auth'].includes(target)) throw new UsageError(`unknown panel service: ${target}`)
   const global = globals(command)
   if (global.json) {
     const result = await webCompose(command, ['logs', '--no-color', '--no-log-prefix', '--tail', '100', target], {}, 'pipe')
     new Output(global).data({ lines: result.stdout.split('\n').filter(Boolean) })
   } else await webCompose(command, ['logs', '--follow', '--tail', '100', target])
 }
-export async function webBuild(command: Command): Promise<void> { await webCompose(command, ['build', 'web']) }
+export async function webBuild(command: Command): Promise<void> {
+  const context = gatewayContext({ profile: globals(command).profile })
+  const image = porttaImages(context.version).runtime
+  await runProcess('docker', [
+    'build', '--build-arg', `PORTTA_VERSION=${context.version}`, '--target', 'runtime',
+    '-f', 'apps/web/Dockerfile', '-t', image, '.',
+  ], { cwd: context.root, stdio: 'inherit' })
+}
 
 export async function webStatus(command: Command): Promise<void> {
   const global = globals(command)
@@ -308,7 +403,21 @@ export async function webStatus(command: Command): Promise<void> {
   const containers = await inspectContainers()
   const panel = containers.find((container) => container.labels['portta.component'] === 'web')
   const proxy = containers.find((container) => container.labels['portta.component'] === 'web-socket-proxy')
-  const value = { enabled: context.config.webEnabled, devMode: isTrue(context.env['PORTTA_WEB_DEV']), readOnly: context.config.webReadOnly, expose: context.config.webExpose, url: webUrl(context), panel: { state: panel?.state ?? 'absent' }, socketProxy: { state: proxy?.state ?? 'absent' } }
+  // The mode comes from `.env`; whether an owner exists can only come from the
+  // panel, because it lives in the database. A panel that is not answering
+  // reports `null` rather than a guess.
+  const live = panel?.state === 'running' ? await panelSetupState(panelLoopbackApiUrl(context)) : null
+  const value = {
+    enabled: context.config.webEnabled,
+    devMode: isTrue(context.env['PORTTA_WEB_DEV']),
+    readOnly: context.config.webReadOnly,
+    expose: context.config.webExpose,
+    authMode: context.config.authMode,
+    setupRequired: live ? live.setupRequired : null,
+    url: webUrl(context),
+    panel: { state: panel?.state ?? 'absent' },
+    socketProxy: { state: proxy?.state ?? 'absent' },
+  }
   const output = new Output(global)
   if (output.json) output.data(value)
   else for (const [key, item] of Object.entries(value)) output.line(`${key}: ${typeof item === 'object' ? JSON.stringify(item) : String(item)}`)
@@ -320,49 +429,6 @@ export async function webOpen(command: Command): Promise<void> {
   new Output(globals(command)).data(url)
   const opener = process.platform === 'darwin' ? 'open' : 'xportta-open'
   await runProcess(opener, [url], { reject: false })
-}
-
-function authPath(root: string): string { return join(root, 'config/traefik/dynamic/portta-auth.yaml') }
-export function renderPanelAuth(user?: string, hash?: string): string {
-  return renderSharedPanelAuth(user && hash ? { user, hash } : null)
-}
-function renderAuth(root: string): void {
-  syncPanelProtection(root)
-}
-
-export async function webAuthStatus(command: Command): Promise<void> {
-  const context = gatewayContext({ profile: globals(command).profile })
-  const value = { expose: context.config.webExpose, mode: context.env['PORTTA_WEB_AUTH'] ?? 'none', user: context.env['PORTTA_WEB_AUTH_USER'] || null, hashSet: Boolean(context.env['PORTTA_WEB_AUTH_HASH']), middleware: authPath(context.root) }
-  const output = new Output(globals(command)); if (output.json) output.data(value); else for (const [key, item] of Object.entries(value)) output.line(`${key}: ${String(item)}`)
-}
-
-export async function webAuthSet(options: { user?: string; passwordStdin?: boolean }, command: Command): Promise<void> {
-  const context = gatewayContext({ profile: globals(command).profile })
-  const user = options.user ?? context.env['PORTTA_WEB_AUTH_USER'] ?? 'dev'
-  if (!/^[A-Za-z0-9._-]+$/.test(user)) throw new UsageError(`invalid username: ${user}`)
-  const generated = !options.passwordStdin
-  const password = generated ? randomBytes(20).toString('base64url').slice(0, 20).match(/.{1,5}/g)!.join('-') : readFileSync(0, 'utf8').trim()
-  if (!password) throw new UsageError('no password on stdin')
-  const hash = await hashPassword(password)
-  setValues(context.root, { PORTTA_WEB_AUTH: 'basic', PORTTA_WEB_AUTH_USER: user, PORTTA_WEB_AUTH_HASH: hash })
-  renderAuth(context.root)
-  const output = new Output(globals(command))
-  if (output.json) output.data({ user, password: generated ? password : undefined, generated })
-  else { output.line(`user: ${user}`); if (generated) { output.line(`password: ${password}`); output.warning('this is the only time the generated password is shown') } }
-}
-
-export async function webAuthClear(command: Command): Promise<void> {
-  const context = gatewayContext({ profile: globals(command).profile })
-  if (['vpn', 'public', 'domain'].includes(context.config.webExpose)) throw new RefusedError('refusing to leave a routed panel without a credential', 'run portta web up --expose local first')
-  setValues(context.root, { PORTTA_WEB_AUTH: 'none', PORTTA_WEB_AUTH_USER: '', PORTTA_WEB_AUTH_HASH: '' })
-  renderAuth(context.root)
-  new Output(globals(command)).progress('panel credential removed')
-}
-
-export async function webAuthApply(command: Command): Promise<void> {
-  const context = gatewayContext({ profile: globals(command).profile })
-  renderAuth(context.root)
-  new Output(globals(command)).progress(`rendered ${authPath(context.root)} from .env`)
 }
 
 /**

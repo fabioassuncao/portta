@@ -55,6 +55,10 @@ assert_contains "$(cat docker/compose/features/web-vpn.yaml)" 'traefik.enable: "
 it "the panel binds loopback in the example configuration"
 assert_contains "$(cat .env.example)" "PORTTA_WEB_BIND_ADDRESS=127.0.0.1"
 
+it "the panel service reports healthy on /api/health"
+assert_contains "$(sed -n '/^  web:/,/^  [a-z]/p' docker/compose/features/web.yaml)" "/api/health"
+assert_contains "$(sed -n '/^  web:/,/^  [a-z]/p' docker/compose/features/web.yaml)" "healthcheck:"
+
 it "and is off by default"
 assert_contains "$(cat .env.example)" "PORTTA_WEB=false"
 
@@ -80,9 +84,13 @@ assert_contains "$(cat docker/compose/features/db.yaml)" 'portta.component: db-v
 it "the overlay follows the panel"
 assert_contains "$(PORTTA_WEB=true PORTTA_RUNTIME_DB_PASSWORD=test bash -c '. scripts/lib/common.sh; . scripts/lib/docker.sh; portta_defaults; portta_compose_files local')" "docker/compose/features/db.yaml"
 
+it "the panel waits for Postgres to accept connections before it starts"
+assert_contains "$(sed -n '/^  web:/,/^[^ ]/p' docker/compose/features/db.yaml)" "condition: service_healthy"
+assert_contains "$(sed -n '/^  web:/,/^[^ ]/p' docker/compose/features/db.yaml)" "db:"
+
 it "the password is generated and declared secret"
-assert_contains "$(cat scripts/bootstrap.sh)" "portta_env_set PORTTA_RUNTIME_DB_PASSWORD"
-assert_contains "$(sed -n '/PORTTA_RUNTIME_DB_PASSWORD/,/},/p' apps/web/src/server/core/settings.ts)" "secret: true"
+assert_contains "$(cat scripts/bootstrap.sh)" "portta_prepare_env"
+assert_contains "$(sed -n '/PORTTA_RUNTIME_DB_PASSWORD/,/},/p' packages/server/src/services/settings.ts)" "secret: true"
 
 
 describe "the panel database has private operational tooling"
@@ -118,7 +126,7 @@ assert_contains "$(cat "$db_clients")" "await confirm('restore the panel databas
 
 describe "the API cannot reach a Docker endpoint it does not name"
 
-allowlist="apps/web/src/server/docker/allowlist.ts"
+allowlist="packages/server/src/services/docker/allowlist.ts"
 
 for forbidden in "/exec" "/images" "/volumes" "/build" "/system" "/secrets" "prune" "archive"; do
   it "no allowlist rule mentions $forbidden"
@@ -133,7 +141,7 @@ assert_eq "1" "$(grep -c "containers\\\\/create" "$allowlist" || true)"
 
 describe "a removal takes the container and nothing else"
 
-client="apps/web/src/server/docker/client.ts"
+client="packages/server/src/services/docker/client.ts"
 
 it "volumes are never removed alongside a container"
 assert_contains "$(cat "$client")" "v: '0'"
@@ -153,21 +161,27 @@ assert_contains "$(cat "$client")" "Privileged: false"
 describe "secrets stay on the host"
 
 it "secret settings are declared as such"
-assert_contains "$(cat apps/web/src/server/core/settings.ts)" "secret: true"
+assert_contains "$(cat packages/server/src/services/settings.ts)" "secret: true"
 
 it "the config view never returns a secret value"
-assert_contains "$(cat apps/web/src/server/core/configview.ts)" "value: secret ? null : stored"
+assert_contains "$(cat packages/server/src/services/configview.ts)" "value: secret ? null : stored"
 
 describe "the CLI drives it"
 
 # `public` is a supported mode since ADR 0021, and it is the one the installer
 # offers first. What is refused is reaching the panel from another machine with
 # nothing in front of it.
+# Refusal tests must never inherit the developer's real installation settings.
+refusal_root=$(mktemp -d)
+trap 'rm -rf "$refusal_root"' EXIT
+cp VERSION .env.example "$refusal_root/"
+mkdir -p "$refusal_root/docker"
+ln -s "$PORTTA_ROOT/docker/compose" "$refusal_root/docker/compose"
 it "publishing the panel publicly without a credential is refused"
-assert_contains "$(./bin/portta web up --expose public 2>&1)" "needs a credential"
+assert_contains "$(PORTTA_ROOT="$refusal_root" ./bin/portta web up --expose public 2>&1)" "needs the panel to sign people in"
 
 it "an unknown expose value fails"
-assert_failure ./bin/portta web up --expose nonsense
+assert_failure env PORTTA_ROOT="$refusal_root" ./bin/portta web up --expose nonsense
 
 describe "the panel is handed the settings it renders"
 
@@ -203,8 +217,38 @@ assert_contains "$compose" './state/runner:/app/state/runner'
 assert_contains "$compose" './state/access:/app/state/access'
 
 it "the panel refuses a path it could not open, naming that directory"
-assert_contains "$(cat apps/web/src/server/core/settings.ts)" "the directory mounted into the panel"
+assert_contains "$(cat packages/server/src/services/settings.ts)" "the directory mounted into the panel"
 
+
+describe "the image carries every workspace the panel resolves"
+
+# `packages/auth` was added and the Dockerfile was not, so `portta-server`
+# compiled against a `portta-auth-core` that did not exist in the image and the
+# build failed at `docker build` — a long way from the change that caused it,
+# and only on a host that actually builds the image.
+dockerfile="$(cat apps/web/Dockerfile)"
+required=$(python3 - <<'PYEOF'
+import json, pathlib
+wanted = set()
+for manifest in ('apps/web/package.json', 'packages/server/package.json'):
+    data = json.loads(pathlib.Path(manifest).read_text())
+    wanted |= {name for name in data.get('dependencies', {}) if name.startswith('portta-')}
+# Resolve each name to the directory that declares it.
+for path in sorted(pathlib.Path('packages').glob('*/package.json')):
+    if json.loads(path.read_text())['name'] in wanted:
+        print(path.parent.as_posix())
+PYEOF
+)
+
+for workspace in $required; do
+  it "$workspace is installed, copied and built"
+  assert_contains "$dockerfile" "COPY $workspace/package.json"
+  assert_contains "$dockerfile" "COPY $workspace/src"
+done
+
+it "and each one is built before the packages that import it"
+order=$(printf '%s' "$dockerfile" | sed -n 's/.*npm run build --workspace=\(portta[a-z-]*\).*/\1/p' | tr '\n' ' ')
+assert_eq "portta-core portta-contracts portta-db portta-auth-core portta-server portta-auth portta-web " "$order"
 
 describe "every panel command resolves the file list with the panel enabled"
 
@@ -215,12 +259,12 @@ describe "every panel command resolves the file list with the panel enabled"
 it "the shared compose helper passes the override"
 assert_contains "$(sed -n '/^async function webCompose/,/^}/p' packages/cli/src/commands/web.ts)" "overrides: PANEL_OVERRIDES"
 
-it "and so does web down, with the dev pair included"
+it "and so does web down, which resolves the dev overlay too"
 assert_contains "$(sed -n '/^export async function webDown/,/^}/p' packages/cli/src/commands/web.ts)" "PORTTA_WEB_DEV: 'true'"
 assert_contains "$(sed -n '/^export async function webDown/,/^}/p' packages/cli/src/commands/web.ts)" "overrides:"
 
 it "and web up uses what it just wrote"
-assert_contains "$(sed -n '/^export async function webUp/,/^}/p' packages/cli/src/commands/web.ts)" "overrides: values"
+assert_contains "$(sed -n '/^export function prepareWebUp/,/^}/p' packages/cli/src/commands/web.ts)" "overrides: values"
 
 describe "a public panel is published by Traefik, never by the container"
 
@@ -230,8 +274,11 @@ assert_contains "$(cat docker/compose/features/panel-public.yaml)" "TRAEFIK_ENTR
 it "and attaches the panel router to that entrypoint only"
 assert_contains "$(cat docker/compose/features/panel-public.yaml)" "traefik.http.routers.portta-panel.entrypoints: panel"
 
-it "behind the same ForwardAuth middleware the vpn mode uses"
-assert_contains "$(cat docker/compose/features/panel-public.yaml)" "portta-forward-auth@file"
+# The panel signs people in itself now, so the router carries no middleware:
+# what stands in front of it is PORTTA_AUTH_MODE=required, which `web up` and
+# the panel's own process both refuse to do without.
+it "and carries no Traefik middleware, because the panel authenticates itself"
+assert_eq "" "$(grep -n 'middlewares' docker/compose/features/panel-public.yaml || true)"
 
 it "the panel container publishes no host port of its own there"
 assert_eq "" "$(sed -n '/^  web:/,$p' docker/compose/features/panel-public.yaml | grep -E '^\s+ports:' || true)"
@@ -246,18 +293,34 @@ it "and publishing the panel publishes no application entrypoint"
 # The router is scoped to `panel`; nothing here touches web or websecure.
 assert_eq "" "$(grep -E 'entrypoints: (web|websecure)' docker/compose/features/panel-public.yaml || true)"
 
-describe "the panel is routed only behind a credential"
+describe "the panel is routed only when it signs people in"
 
-it "the vpn overlay names a middleware"
-assert_contains "$(cat docker/compose/features/web-vpn.yaml)" "portta-forward-auth@file"
+for overlay in web-vpn panel-domain panel-public; do
+  it "the $overlay router names no middleware"
+  assert_eq "" "$(grep -n 'middlewares' "docker/compose/features/$overlay.yaml" || true)"
+done
 
-for key in PORTTA_WEB_AUTH PORTTA_WEB_AUTH_USER PORTTA_WEB_AUTH_HASH; do
+for key in PORTTA_AUTH_MODE PORTTA_AUTH_SECRET PORTTA_PANEL_URL PORTTA_PANEL_TRUSTED_ORIGINS; do
   it "$key is in the example configuration"
   assert_contains "$(cat .env.example)" "$key="
 done
 
 it "authentication is off by default, because loopback needs none"
-assert_contains "$(cat .env.example)" "PORTTA_WEB_AUTH=none"
+assert_contains "$(cat .env.example)" "PORTTA_AUTH_MODE=disabled"
+
+it "and the keys that used to guard the panel are gone from it"
+assert_eq "" "$(grep -nE '^PORTTA_WEB_AUTH' .env.example || true)"
+
+it "the panel gets the mode, the secret and its own URL from compose"
+web_service="$(cat docker/compose/features/web.yaml)"
+assert_contains "$web_service" 'PORTTA_AUTH_MODE: ${PORTTA_AUTH_MODE:-disabled}'
+assert_contains "$web_service" 'PORTTA_AUTH_SECRET: ${PORTTA_AUTH_SECRET:-}'
+assert_contains "$web_service" 'PORTTA_PANEL_URL: ${PORTTA_PANEL_URL:-}'
+assert_contains "$web_service" 'PORTTA_PANEL_TRUSTED_ORIGINS: ${PORTTA_PANEL_TRUSTED_ORIGINS:-}'
+assert_eq "" "$(grep -n 'PORTTA_WEB_AUTH' docker/compose/features/web.yaml || true)"
+
+it "and web up writes a panel URL that matches the exposure"
+assert_contains "$(cat packages/cli/src/commands/web.ts)" "values['PORTTA_PANEL_URL']"
 
 it "the disposable auth migrator gets explicit write mounts without weakening the service"
 auth_prepare="$(cat scripts/lib/auth.sh)"
@@ -270,24 +333,38 @@ assert_contains "$auth_services" './config/traefik/dynamic:/app/state/traefik-dy
 assert_contains "$auth_services" 'profiles: [migration]'
 assert_contains "$auth_services" 'network_mode: none'
 
-it "the hash is declared a secret, so the API never returns it"
-assert_contains "$(sed -n '/PORTTA_WEB_AUTH_HASH/,/},/p' apps/web/src/server/core/settings.ts)" "secret: true"
+it "the signing secret is declared a secret, so the API never returns it"
+assert_contains "$(sed -n '/PORTTA_AUTH_SECRET/,/},/p' packages/server/src/services/settings.ts)" "secret: true"
 
-it "routing the panel without a credential is refused by the profile resolver"
-assert_contains "$(cat scripts/lib/docker.sh)" "the panel is reachable beyond this host with no credential in front of it"
+it "routing the panel without a sign-in is refused by the profile resolver"
+assert_contains "$(cat scripts/lib/docker.sh)" "the panel is reachable beyond this host and asks nobody who they are"
+
+it "and so is required mode with no secret to sign sessions with"
+assert_contains "$(cat scripts/lib/docker.sh)" "PORTTA_AUTH_MODE=required with no PORTTA_AUTH_SECRET"
 
 it "and by web up"
-out=$(PORTTA_WEB_AUTH=none ./bin/portta web up --expose vpn 2>&1 || true)
-assert_contains "$out" "needs a credential"
+out=$(PORTTA_ROOT="$refusal_root" ./bin/portta web up --expose vpn 2>&1 || true)
+assert_contains "$out" "needs the panel to sign people in"
 
+# The panel has no password of its own to hash: people sign in to it, and Better
+# Auth hashes what they type inside the process.
+it "the CLI stores no panel credential at all"
+assert_eq "" "$(grep -nE "hashPassword|PORTTA_WEB_AUTH" packages/cli/src/commands/web.ts || true)"
 
-it "the password never reaches a command line, where ps would show it"
-assert_contains "$(cat packages/cli/src/commands/web.ts)" "hashPassword(password)"
-assert_eq "" "$(grep -nE "runProcess\([^]]*password" packages/cli/src/commands/web.ts || true)"
+# A panel in `required` mode has exactly one page until somebody creates the
+# owner, and an installer or an operator who is not told that has a host that
+# looks started and unreachable.
+it "web up says where the first account is created"
+assert_contains "$(cat packages/cli/src/commands/web.ts)" "/setup to create it"
+
+it "and web status reports the mode and whether it is still needed"
+status_body="$(sed -n '/^export async function webStatus/,/^}/p' packages/cli/src/commands/web.ts)"
+assert_contains "$status_body" "authMode"
+assert_contains "$status_body" "setupRequired"
 
 describe "the panel writes four filenames into Traefik's dynamic directory"
 
-dynamic="apps/web/src/server/core/dynamic.ts"
+dynamic="packages/server/src/services/dynamic.ts"
 
 it "the allowlist names exactly four files"
 assert_eq "4" "$(grep -cE "^  (panel|shares|aliases|auth): 'portta-[a-z]+\.yaml'," "$dynamic")"
@@ -308,10 +385,10 @@ assert_eq "" "$(sed -n '/^    volumes:/,/^    networks:/p' docker/compose/featur
 
 describe "the panel reads Traefik, and only reads it"
 
-traefik="apps/web/src/server/core/traefik.ts"
+traefik="packages/server/src/services/traefik.ts"
 
 it "it reaches Traefik over the shared network, not the control one"
-assert_eq "" "$(grep -n 'control' apps/web/src/server/config.ts | grep -i traefik || true)"
+assert_eq "" "$(grep -n 'control' packages/server/src/config.ts | grep -i traefik || true)"
 
 for method in POST PUT PATCH DELETE; do
   it "no $method is ever sent to the Traefik API"
@@ -330,10 +407,13 @@ assert_contains "$(cat "$traefik")" "createVerdictCache"
 describe "the CLI and the panel render the same middleware contract"
 
 it "both surfaces import the core renderer"
-assert_contains "$(cat packages/cli/src/commands/web.ts)" "renderSharedPanelAuth"
-assert_contains "$(cat apps/web/src/server/core/dynamic.ts)" "renderSharedPanelAuth"
-it "the middleware has one canonical definition"
-assert_eq "1" "$(grep -R --include='*.ts' -l "PANEL_AUTH_MIDDLEWARE = 'portta-web-auth'" packages apps | wc -l | tr -d ' ')"
+assert_contains "$(cat packages/cli/src/commands/web.ts)" "renderPanelAuth"
+assert_contains "$(cat packages/server/src/services/dynamic.ts)" "renderPanelAuth"
+
+# The panel signs people in itself, so nothing routes through a middleware to
+# reach it. A definition surviving anywhere would be a second answer.
+it "no panel authentication middleware is defined anywhere"
+assert_eq "" "$(grep -R --include='*.ts' -l "PANEL_AUTH_MIDDLEWARE" packages/*/src apps/*/src || true)"
 
 describe "the panel is containerised, and the host needs no Node"
 
@@ -373,25 +453,58 @@ assert_contains "$(cat docker/compose/features/web-dev.yaml)" 'command: ["npm", 
 it "mounts the shared package so editing it reloads the panel"
 assert_contains "$(cat docker/compose/features/web-dev.yaml)" "./packages/core/src:/app/packages/core/src"
 
-it "mounts panel SQL so a new migration is visible without rebuilding"
-assert_contains "$(cat docker/compose/features/web-dev.yaml)" "./apps/web/migrations:/app/apps/web/migrations"
+it "mounts the auth package the panel process imports"
+assert_contains "$(cat docker/compose/features/web-dev.yaml)" "./packages/auth/src:/app/packages/auth/src"
 
-it "publishes the UI on its own port, which is where the panel answers"
-assert_contains "$(cat docker/compose/features/web-dev.yaml)" "PORTTA_WEB_DEV_PORT:-5173"
+it "mounts the generated SQL so a new migration is visible without rebuilding"
+assert_contains "$(cat docker/compose/features/web-dev.yaml)" "./packages/db/drizzle:/app/packages/db/drizzle"
 
-it "mounts the documentation so the docs Vite can collect it"
+# One process, one port: Next, the API, the event stream and the upgrades are
+# all behind one dispatcher, so HMR arrives on the same port the API answers on.
+# There used to be a second container running Vite on 5173.
+it "runs one container, not a second one for the UI"
+assert_eq "" "$(grep -vE '^\s*#' docker/compose/features/web-dev.yaml | grep -n 'web-ui\|5173' || true)"
+
+# The overlay stopped defining it and the CLI kept starting it, which Compose
+# answers with "no such service" — and that fails the whole `up`, so `web dev`
+# was broken from the moment the container was removed until somebody ran it.
+it "and the CLI does not name a service the overlay no longer defines"
+assert_eq "" "$(grep -vE '^\s*(//|\*|/\*)' packages/cli/src/commands/web.ts | grep -n "'web-ui'" || true)"
+
+it "mounts the documentation so a change to a page is visible without rebuilding"
 assert_contains "$(cat docker/compose/features/web-dev.yaml)" "./docs:/app/docs:ro"
 
-it "mounts the docs Vite config beside the UI one"
-assert_contains "$(cat docker/compose/features/web-dev.yaml)" "./apps/web/vite.docs.config.ts:/app/apps/web/vite.docs.config.ts:ro"
-
-it "each Vite writes its pre-bundle to its own cacheDir"
-assert_contains "$(cat apps/web/vite.config.ts)" "node_modules/.vite/ui"
-assert_contains "$(cat apps/web/vite.docs.config.ts)" "node_modules/.vite/docs"
-assert_contains "$(cat apps/web/vite.auth.config.ts)" "node_modules/.vite/auth"
+# The panel is Next now. Nothing in apps/web builds with Vite — `vitest.config.ts`
+# is the test runner, which is Vite and says so. The one Vite build left in the
+# repository makes the login page apps/auth serves, a separate service on a
+# separate origin that may not import from the panel.
+it "leaves no Vite build in the panel"
+assert_eq "" "$(find apps/web -maxdepth 1 -name 'vite.*.ts' -o -maxdepth 1 -name 'vite.config.ts' | sort)"
+assert_contains "$(cat apps/auth/vite.config.ts)" "/__portta/auth/"
 
 it "the checkout migrator builds the auth image before running"
 assert_contains "$(sed -n '/export function authMigrationRunArguments/,/^}/p' packages/cli/src/commands/lifecycle.ts)" "'--build'"
+
+describe "ForwardAuth in development mode"
+
+it "runs the auth package's supervised development script"
+assert_contains "$(cat docker/compose/features/auth-dev.yaml)" 'command: ["npm", "run", "dev"]'
+
+it "mounts both the backend and the login page sources"
+assert_contains "$(cat docker/compose/features/auth-dev.yaml)" './apps/auth/src:/app/apps/auth/src'
+assert_contains "$(cat docker/compose/features/auth-dev.yaml)" './apps/auth/ui:/app/apps/auth/ui'
+
+it "keeps source and the container root read-only while the generated UI stays writable"
+assert_eq "" "$(grep -n 'read_only: false' docker/compose/features/auth-dev.yaml || true)"
+assert_contains "$(cat docker/compose/features/auth-dev.yaml)" '- /app/apps/auth/dist'
+assert_contains "$(cat docker/compose/features/auth-dev.yaml)" '- /app/apps/auth/node_modules'
+
+it "watches the backend and the generated login bundle"
+assert_contains "$(cat apps/auth/package.json)" 'node --conditions=development --watch src/index.ts'
+assert_contains "$(cat apps/auth/package.json)" 'vite build --watch'
+
+it "runs the isolated migrator directly from source"
+assert_contains "$(cat docker/compose/features/auth-dev.yaml)" 'command: ["node", "--conditions=development", "src/migrate.ts"]'
 
 describe "a container that reads an owner-only file runs as its owner"
 
@@ -419,8 +532,9 @@ done
 
 it "and so does web up, for a checkout the installer never touched"
 web_source="$(cat packages/cli/src/commands/web.ts)"
+assert_contains "$web_source" "prepareEnvFile"
 for key in PORTTA_WEB_USER PORTTA_AUTH_USER; do
-  assert_contains "$web_source" "values['$key']"
+  assert_contains "$(cat packages/core/src/env.ts)" "$key"
 done
 
 t_summary

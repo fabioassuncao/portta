@@ -9,6 +9,67 @@ While the version is `0.x`, minor releases may contain breaking changes.
 
 ## [Unreleased]
 
+### The architecture migration
+
+The panel is a Next application that signs people in, on a database it requires.
+This is one release's worth of change to how a host is set up and operated, so
+it is stated here before the rest.
+
+**Upgrading takes one destructive step.** The panel's schema was rebuilt around
+Drizzle with no compatibility path, and a volume holding the old one is
+refused with the command that fixes it:
+
+```bash
+portta reset --yes     # removes the panel's database volume, and its data
+portta web up
+```
+
+Projects, tasks, repositories and activity recorded by an older Portta do not
+survive that. Nothing outside the panel's own volume is touched: no consumer
+project, no container, no image.
+
+**The panel asks who you are, when it is reachable.** `PORTTA_AUTH_MODE`
+replaces `PORTTA_WEB_AUTH`, `_USER` and `_HASH`, and with them
+`portta web auth set|status|clear|apply`.
+
+- `disabled` answers everybody as the local operator, and is only allowed on
+  loopback. The panel refuses to start any other way.
+- `required` gives it accounts, four roles, sessions, an optional second factor
+  and `ptt_` tokens, all in its own database.
+
+The first account is created once, in a browser at `/setup` or from the host
+with `portta auth bootstrap`. Sign-up closes the moment it exists. There is no
+password reset by email; an administrator sets one, or
+`portta auth reset-password` runs inside the panel's own container.
+
+**Every access mode but `local` requires it.** `portta web up --expose public`,
+`tailscale`, `vpn` and `domain` are refused without `PORTTA_AUTH_MODE=required`,
+by the CLI, by `portta up`, and by the panel's process at boot. The Traefik
+middleware that used to guard the panel's router is gone from every overlay;
+ForwardAuth stays exactly where it was, in front of project hostnames and
+shares.
+
+**PostgreSQL is a boot dependency.** The panel exits rather than serving
+without it. `docker/compose/features/db.yaml` is selected wherever the panel is.
+
+**New commands.** `portta users` (list, create, set-role, set-password, grant,
+revoke, remove), `portta auth` (status, login, logout, whoami, bootstrap,
+reset-password, token), `portta protect` (host, status, remove). `portta web
+auth` is gone.
+
+**The installer no longer invents a panel password.** It asks `required` or
+`disabled` — only offering the question when the panel stays on loopback —
+records the mode, and ends by printing where to create the owner. `--panel-user`
+is refused rather than ignored.
+
+The details are in [authentication](docs/authentication.md),
+[configuration](docs/configuration.md), and ADRs
+[0035](docs/adr/0035-authentication-lives-in-the-panel.md),
+[0036](docs/adr/0036-next-app-router-and-the-custom-server.md),
+[0037](docs/adr/0037-drizzle-and-a-required-database.md),
+[0038](docs/adr/0038-roles-and-project-access.md) and
+[0039](docs/adr/0039-personal-api-tokens.md).
+
 ### Added
 
 - **Files attach to a task.** A screenshot, a log, the JSON that reproduces

@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../context.js', () => ({
   gatewayContext: () => ({
     root: mocks.root,
-    env: { PORTTA_WEB_PORT: '8081', PORTTA_WEB_AUTH_USER: 'dev', PORTTA_PANEL_PASSWORD: 'secret' },
+    env: { PORTTA_WEB_PORT: '8081', PORTTA_TOKEN: 'ptt_secret' },
     config: {},
     composeFiles: [],
     version: 'test',
@@ -34,6 +34,7 @@ const shopManifest = join(repoRoot, 'docker/examples/demo-shop/portta.example.js
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   mocks.requests.length = 0
   mocks.root = '/tmp/portta'
   mocks.runProcess.mockReset()
@@ -140,13 +141,35 @@ describe('demo stacks', () => {
 })
 
 describe('applyDemo', () => {
-  it('starts stacks then imports when the panel is already up', async () => {
+  it('waits for the panel before starting stacks, then imports', async () => {
     mocks.root = repoRoot
-    mocks.runProcess.mockResolvedValue({ stdout: '', stderr: '', exitCode: 0, failed: false })
-    stubPanel('up')
+    const order: string[] = []
+    mocks.runProcess.mockImplementation(async () => {
+      order.push('stacks')
+      return { stdout: '', stderr: '', exitCode: 0, failed: false }
+    })
+    vi.stubGlobal('fetch', async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET'
+      if (String(url).includes('/api/health')) {
+        order.push('health')
+        return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      mocks.requests.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined })
+      if (method === 'GET' && /\/projects\/[^/]+$/.test(url)) return new Response('', { status: 404 })
+      if (method === 'POST' && url.endsWith('/projects')) return new Response('{}', { status: 201 })
+      if (method === 'POST' && String(url).includes('/tasks/import')) {
+        return new Response(JSON.stringify({ created: 2, updated: 0 }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    })
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
     await applyDemo(command(), { ensurePanel: true })
+
     expect(mocks.webUp).not.toHaveBeenCalled()
-    expect(mocks.runProcess).toHaveBeenCalled()
+    expect(order.indexOf('health')).toBeGreaterThanOrEqual(0)
+    expect(order.indexOf('health')).toBeLessThan(order.indexOf('stacks'))
     expect(mocks.requests.some((request) => request.method === 'POST' && String(request.url).includes('/tasks/import'))).toBe(true)
   })
 

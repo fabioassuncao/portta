@@ -73,6 +73,24 @@ it "keeps the persistent authentication service read-only"
 auth_container=$(portta_gateway_container auth)
 assert_eq "true false" "$(docker inspect "$auth_container" --format '{{.HostConfig.ReadonlyRootfs}} {{range .Mounts}}{{if eq .Destination "/app/state/auth"}}{{.RW}}{{end}}{{end}}')"
 
+# The panel signs its own people in, so the file that used to carry its
+# credential declares nothing. Written rather than deleted: Traefik watches the
+# directory, and a file that merely stops being updated keeps working.
+it "leaves no middleware behind for the panel"
+panel_file="$PORTTA_ROOT/config/traefik/dynamic/portta-panel.yaml"
+if [ -f "$panel_file" ]; then
+  assert_eq "" "$(grep -n 'middlewares:' "$panel_file" || true)"
+else
+  skip "no generated panel file on this host"
+fi
+
+it "and the store carries no panel or dashboard scope"
+assert_eq "" "$(python3 -c "
+import json, sys
+store = json.load(open('$PORTTA_ROOT/state/auth/protections.json'))
+print(' '.join(p['scope'] for p in store.get('protections', []) if p['scope'] in ('panel', 'dashboard')))
+")"
+
 up_demo demo-a
 up_demo demo-b
 sleep 4

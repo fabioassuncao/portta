@@ -22,6 +22,8 @@
  * See docs/adr/0022-project-domain-modes.md.
  */
 
+import { hostLabel } from './hostname.ts'
+
 export const DOMAIN_MODES = ['local', 'auto', 'custom'] as const
 export type DomainMode = (typeof DOMAIN_MODES)[number]
 
@@ -113,6 +115,10 @@ export function resolveDomain(options: {
 }
 
 /** What a project's hostname will look like, for a preview the operator reads. */
-export function exampleHostnames(domain: string, services = ['web', 'api', 'mail']): string[] {
-  return services.map((service) => `${service}.${domain}`)
+export function exampleHostnames(
+  domain: string,
+  services = ['web', 'api'],
+  project = 'loja',
+): string[] {
+  return services.map((service) => `${hostLabel({ project, service })}.${domain}`)
 }

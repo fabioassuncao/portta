@@ -1,8 +1,8 @@
 # Documentation
 
 The README explains the idea and the shortest path to a running gateway. This
-is the complete operator and contributor index. Historical build briefs under
-`prompts/` are deliberately not part of the product documentation.
+is the complete operator and contributor index: everything a person needs to
+run Portta, or to change it, is reachable from here.
 
 ## Getting started
 
@@ -52,6 +52,7 @@ is the complete operator and contributor index. Historical build briefs under
 
 ## Web panel
 
+- [Addresses and access](addresses-and-access.md) — project hostnames, public access, the panel URL, Traefik, TLS, VPN, and the DNS each scenario needs.
 - [Web UI](web-ui.md) — installation, pages, API, actions, authentication, the documentation site it serves, and screenshots.
 - [Design system](design-system.md) — the panel's tokens, type scale, states, components and layout, and the rules for adding to them.
 - [Tasks](tasks.md) — the workspace, kick-create drafts, import/export, GitHub binding, and how commits will attach.
@@ -70,3 +71,5 @@ is the complete operator and contributor index. Historical build briefs under
 
 - [Changelog](../CHANGELOG.md) — released behaviour and upgrade notes.
 - [Template copied into consumer projects](../templates/project/PORTTA.md) — a short project-local runbook.
+
+- [Configuration and startup audit](configuration-audit.md)

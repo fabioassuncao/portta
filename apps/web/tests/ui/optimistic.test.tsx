@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { useOptimisticMutation } from '../../src/ui/lib/optimistic.ts'
+import { useOptimisticMutation } from '@/lib/optimistic'
 
 const KEY = ['rows']
 

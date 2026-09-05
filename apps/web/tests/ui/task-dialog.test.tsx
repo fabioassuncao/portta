@@ -2,23 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
+import { navigation } from './setup.ts'
 import { makeTask } from './fixtures.ts'
 
 const createTask = vi.fn()
-const navigate = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError: class ApiError extends Error {},
   api: {
     createTask: (slug: string, body: unknown) => createTask(slug, body),
   },
 }))
 
-vi.mock('../../src/ui/lib/router.ts', () => ({
-  navigate: (path: string) => navigate(path),
-}))
-
-const { useKickCreate } = await import('../../src/ui/lib/kick-create.ts')
+const { useKickCreate } = await import('@/lib/kick-create')
 
 function Probe({ parentId }: { parentId?: string }) {
   const kick = useKickCreate('produto')
@@ -27,7 +23,7 @@ function Probe({ parentId }: { parentId?: string }) {
 
 beforeEach(() => {
   createTask.mockReset().mockResolvedValue(makeTask({ id: '9', draft: true, title: 'New task' }))
-  navigate.mockReset()
+  navigation.push.mockReset()
 })
 
 describe('kick-create', () => {
@@ -35,7 +31,7 @@ describe('kick-create', () => {
     renderWithQuery(<Probe />)
     await userEvent.click(screen.getByRole('button', { name: 'New task' }))
     await waitFor(() => expect(createTask).toHaveBeenCalledWith('produto', expect.objectContaining({ title: 'New task', draft: true })))
-    expect(navigate).toHaveBeenCalledWith('/projects/produto/tasks/9')
+    expect(navigation.push).toHaveBeenCalledWith('/projects/produto/tasks/9')
   })
 
   it('creates a draft under its parent', async () => {

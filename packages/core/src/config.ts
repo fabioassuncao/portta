@@ -1,15 +1,9 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { databaseMode, type DatabaseMode } from './database-config.ts'
 import { resolveDomain, type DomainMode } from './domain.ts'
 import { dashboardAdvertisedHost, isHostnameStyle, type HostnameStyle } from './hostname.ts'
 
 export const AUTH_BUILD_FILE = 'docker/compose/features/auth-build.yaml'
-export const LOCAL_PORTA_IMAGE = 'fabioassuncao/portta:local'
-
-/** A checkout has the Dockerfiles; PORTTA_HOME does not. */
-export function isCheckoutSource(root: string): boolean {
-  return existsSync(join(root, 'apps/web/Dockerfile')) && existsSync(join(root, 'apps/auth'))
-}
+export const AUTH_DEV_FILE = 'docker/compose/features/auth-dev.yaml'
 
 export const TRUTHY = new Set(['1', 'true', 'yes', 'on', 'enabled'])
 
@@ -32,14 +26,33 @@ export function isGatewayProfile(value: string): value is GatewayProfile {
  *
  *   local      loopback only; reach it over an SSH tunnel
  *   tailscale  bound to the node's tailnet address, nothing on the public NIC
- *   public     Traefik's own `panel` entrypoint on every interface, ForwardAuth
+ *   public     Traefik's own `panel` entrypoint on every interface
  *   vpn        routed by Traefik at PORTTA_WEB_HOST.<domain> (remote-private)
+ *   domain     routed by Traefik on one hostname of the gateway's own domain
+ *
+ * Everything but `local` needs `PORTTA_AUTH_MODE=required`: the panel is what
+ * stands in front of the panel now.
  */
 export const PANEL_ACCESS_MODES = ['local', 'tailscale', 'public', 'vpn', 'domain'] as const
 export type PanelAccess = (typeof PANEL_ACCESS_MODES)[number]
 
 export function isPanelAccess(value: string): value is PanelAccess {
   return (PANEL_ACCESS_MODES as readonly string[]).includes(value)
+}
+
+/**
+ * Whether the panel asks who you are.
+ *
+ * The two words are the operator's, and they are what `.env` holds; the panel's
+ * own process calls the same two states `protected` and `open`, because inside
+ * it the question is what a request already is rather than what a host was
+ * configured to do.
+ */
+export const PANEL_AUTH_MODES = ['disabled', 'required'] as const
+export type PanelAuthMode = (typeof PANEL_AUTH_MODES)[number]
+
+export function isPanelAuthMode(value: string): value is PanelAuthMode {
+  return (PANEL_AUTH_MODES as readonly string[]).includes(value)
 }
 
 export interface GatewayConfig {
@@ -49,6 +62,7 @@ export interface GatewayConfig {
   controlNetwork: string
   accessNetwork: string
   webNetwork: string
+  databaseMode: DatabaseMode
   databaseNetwork: string
   domain: string
   bindAddress: string
@@ -77,6 +91,16 @@ export interface GatewayConfig {
   publicIp: string | null
   webPort: number
   webReadOnly: boolean
+  /**
+   * Whether the panel signs people in.
+   *
+   * `disabled` makes every request the local operator, which is only legal on
+   * loopback: the panel's own process refuses to start any other way, and
+   * `portta web up --expose` refuses before it gets there. The value is here
+   * rather than only in the panel's environment so the CLI, `doctor` and the
+   * installer can all say what mode a host is in without starting anything.
+   */
+  authMode: PanelAuthMode
   /** Only the webhook overlay reads this: the panel decides everything else about the App. */
   githubAppEnabled: boolean
   /** Whether the Cloudflare Tunnel connector runs beside the gateway. */
@@ -98,6 +122,10 @@ export function loadGatewayConfig(env: Record<string, string | undefined> = proc
   if (!isGatewayProfile(profile)) throw new Error(`unknown profile: ${profile}`)
   const webExpose = value(env, 'PORTTA_WEB_EXPOSE', 'local')
   if (!isPanelAccess(webExpose)) throw new Error(`unknown panel access mode: ${webExpose}`)
+  const authMode = value(env, 'PORTTA_AUTH_MODE', 'disabled')
+  if (!isPanelAuthMode(authMode)) {
+    throw new Error(`unknown panel authentication mode: ${authMode} (disabled or required)`)
+  }
   const publicDomain = optional(env, 'PUBLIC_DOMAIN')
   const privateDomain = optional(env, 'PRIVATE_DOMAIN')
 
@@ -139,6 +167,7 @@ export function loadGatewayConfig(env: Record<string, string | undefined> = proc
     controlNetwork: value(env, 'PORTTA_CONTROL_NETWORK', 'portta-control'),
     accessNetwork: value(env, 'PORTTA_ACCESS_NETWORK', 'portta-access'),
     webNetwork: value(env, 'PORTTA_WEB_NETWORK', 'portta-web'),
+    databaseMode: databaseMode(env),
     databaseNetwork: value(env, 'PORTTA_DB_NETWORK', 'portta-data'),
     domain,
     bindAddress,
@@ -172,6 +201,7 @@ export function loadGatewayConfig(env: Record<string, string | undefined> = proc
     publicIp: optional(env, 'PORTTA_PUBLIC_IP'),
     webPort: Number(value(env, 'PORTTA_WEB_PORT', '8081')),
     webReadOnly: isTrue(env['PORTTA_WEB_READ_ONLY']),
+    authMode,
     githubAppEnabled: isTrue(env['GITHUB_APP_ENABLED']),
     tunnelEnabled: isTrue(env['CLOUDFLARE_TUNNEL_ENABLED']),
     tunnelZone: optional(env, 'CLOUDFLARE_TUNNEL_ZONE'),
@@ -232,7 +262,11 @@ export function composeFiles(config: GatewayConfig): string[] {
   }
   if (config.tcpEnabled) files.push(attached === 'tailscale' ? 'docker/compose/features/tcp-tailscale.yaml' : 'docker/compose/features/tcp.yaml')
   if (config.webEnabled) {
-    files.push('docker/compose/features/web.yaml', 'docker/compose/features/db.yaml')
+    // Always together. PostgreSQL is a boot dependency of the panel, not a
+    // feature of it: a panel with no database refuses to start, so a profile
+    // that selected one without the other could only ever produce that.
+    files.push('docker/compose/features/web.yaml')
+    if (config.databaseMode !== 'external') files.push('docker/compose/features/db.yaml')
     // Exactly one overlay owns the panel's front door, so `public` and a host
     // publish can never both claim PORTTA_WEB_PORT.
     if (config.webExpose === 'public') files.push('docker/compose/features/panel-public.yaml')
@@ -254,7 +288,8 @@ export function composeFiles(config: GatewayConfig): string[] {
   // Auth is a gateway service, not a panel extra: the migrator runs on `up`
   // even when the panel is off. The overlay is selected by the local-build
   // flags here; a checkout appends it in composeFilesForRoot.
-  if (config.webBuild || config.webDev) files.push(AUTH_BUILD_FILE)
+  if (config.webBuild) files.push(AUTH_BUILD_FILE)
+  if (config.webDev) files.push(AUTH_DEV_FILE)
   // Last, and independent of every other axis: the connector is an extra way in,
   // never a replacement for one. A gateway can carry a tunnel while still
   // publishing ports, or while publishing none at all.
@@ -266,13 +301,8 @@ function hostnameStyleOf(value: string): HostnameStyle {
   return isHostnameStyle(value) ? value : 'project-service'
 }
 
-const TUNNEL_FILE = 'docker/compose/features/cloudflare-tunnel.yaml'
-
-/** Overlays for this root: the env-selected set, plus auth-build in a checkout. */
+/** Overlays for this root. Local builds are explicit; merely being a checkout changes nothing. */
 export function composeFilesForRoot(config: GatewayConfig, root: string): string[] {
-  const files = composeFiles(config)
-  if (!isCheckoutSource(root) || files.includes(AUTH_BUILD_FILE)) return files
-  const tunnel = files.indexOf(TUNNEL_FILE)
-  if (tunnel === -1) return [...files, AUTH_BUILD_FILE]
-  return [...files.slice(0, tunnel), AUTH_BUILD_FILE, ...files.slice(tunnel)]
+  void root
+  return composeFiles(config)
 }

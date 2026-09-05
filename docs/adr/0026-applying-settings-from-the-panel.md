@@ -53,7 +53,7 @@ docker create --name portta-apply
   --workdir  $PORTTA_ROOT
   --volume   /var/run/docker.sock:/var/run/docker.sock
   --volume   $PORTTA_ROOT:$PORTTA_ROOT
-  fabioassuncao/portta-apply:0.2.0
+  fabioassuncao/portta-apply:<VERSION>
   bash $PORTTA_ROOT/bin/portta up --wait
 ```
 

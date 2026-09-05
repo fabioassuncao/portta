@@ -3,7 +3,7 @@ import { screen, waitFor } from '@testing-library/react'
 import { userEvent } from '@testing-library/user-event'
 import { renderWithQuery } from './render.tsx'
 import { makeContainer, makeOperable, makeStartable } from './fixtures.ts'
-import type { ContainerSummary, Environment } from '../../src/shared/types.ts'
+import type { ContainerSummary, Environment } from 'portta-contracts'
 
 class ApiError extends Error {
   status: number
@@ -23,7 +23,7 @@ const serviceAlias = vi.fn()
 const clearServiceAlias = vi.fn()
 const projects = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api', () => ({
   ApiError,
   api: {
     projects: () => Promise.resolve([]),
@@ -44,9 +44,9 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { EnvironmentSettingsDialog } = await import('../../src/ui/components/environment-settings.tsx')
-const { ServiceAlias } = await import('../../src/ui/components/service-alias.tsx')
-const { EnvironmentsPage } = await import('../../src/ui/pages/Environments.tsx')
+const { EnvironmentSettingsDialog } = await import('@/components/environment-settings')
+const { ServiceAlias } = await import('@/components/service-alias')
+const { EnvironmentsView: EnvironmentsPage } = await import('../../app/(panel)/environments/environments-view.tsx')
 
 const WEB_URL = {
   url: 'http://alpha-web.localhost',

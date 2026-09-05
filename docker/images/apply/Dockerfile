@@ -24,6 +24,8 @@
 # ============================================================================
 FROM alpine:3.24.1
 
+ARG PORTTA_VERSION
+
 # Pinned base, unpinned packages: Alpine's repositories only carry the current
 # patch level for a release, so `apk add` inside 3.24.1 is already constrained.
 RUN apk add --no-cache \
@@ -34,6 +36,7 @@ RUN apk add --no-cache \
 
 LABEL org.opencontainers.image.title="portta-apply" \
       org.opencontainers.image.description="Recreates Portta's own containers on the host" \
+      org.opencontainers.image.version="$PORTTA_VERSION" \
       org.opencontainers.image.source="https://github.com/fabioassuncao/portta" \
       org.opencontainers.image.licenses="MIT"
 

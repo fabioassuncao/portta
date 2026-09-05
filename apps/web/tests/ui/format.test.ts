@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bytes, expiresIn, shortImage, uptime } from '../../src/ui/lib/format.ts'
+import { bytes, expiresIn, shortImage, uptime } from '@/lib/format'
 
 describe('formatting', () => {
   it('reads an uptime at a glance', () => {

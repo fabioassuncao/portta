@@ -74,50 +74,9 @@ portta_random_hex() {
 
 # portta_load_env: read .env into the environment without executing it.
 #
-# Mirrors Compose precedence: a variable already set in the shell wins over the
-# file, so `PORTTA_DOMAIN=foo ./bin/portta up` behaves as expected.
+# Installation values win over inherited shell variables.
 # The file is parsed, never sourced: a stray backtick in a value must not run.
-portta_load_env() {
-  local file="${1:-$PORTTA_ROOT/.env}"
-  [ -f "$file" ] || return 0
-
-  local line key value
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      ''|'#'*) continue ;;
-    esac
-    case "$line" in
-      *=*) ;;
-      *) continue ;;
-    esac
-
-    key=${line%%=*}
-    value=${line#*=}
-
-    # `export FOO=bar` is valid in a .env read by some tools; tolerate it.
-    key=${key#export }
-    # Trim surrounding whitespace from the key.
-    key=$(printf '%s' "$key" | tr -d '[:space:]')
-
-    case "$key" in
-      ''|*[!A-Za-z0-9_]*) continue ;;
-    esac
-
-    # Strip one layer of matching quotes, then trailing whitespace.
-    case "$value" in
-      \"*\") value=${value#\"}; value=${value%\"} ;;
-      \'*\') value=${value#\'}; value=${value%\'} ;;
-      *) value=${value%"${value##*[![:space:]]}"} ;;
-    esac
-
-    # Shell environment wins over the file. Indirect expansion rather than
-    # eval, so a crafted key can never be executed even if the filter above
-    # were ever loosened.
-    if [ -z "${!key+set}" ]; then
-      export "$key=$value"
-    fi
-  done < "$file"
-}
+. "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 # ---------------------------------------------------------------------------
 # Project domain
@@ -227,6 +186,7 @@ portta_resolve_domain() {
 # local gateway. Keep these in sync with .env.example.
 portta_defaults() {
   : "${PORTTA_PROFILE:=local}"
+  : "${PORTTA_VERSION:=$(portta_version)}"
   : "${PORTTA_PROJECT_NAME:=portta}"
   : "${PORTTA_NETWORK:=portta}"
   : "${PORTTA_CONTROL_NETWORK:=portta-control}"
@@ -254,7 +214,6 @@ portta_defaults() {
   : "${PORTTA_WEB:=false}"
   : "${PORTTA_WEB_BIND_ADDRESS:=127.0.0.1}"
   : "${PORTTA_WEB_PORT:=8081}"
-  : "${PORTTA_WEB_DEV_PORT:=5173}"
   : "${PORTTA_WEB_DEV:=false}"
   : "${PORTTA_WEB_EXPOSE:=local}"
   : "${PORTTA_WEB_HOST:=portta-web}"
@@ -265,17 +224,26 @@ portta_defaults() {
   : "${PORTTA_RUNNER:=false}"
   : "${PORTTA_WEB_IMAGE:=}"
   : "${PORTTA_AUTH_IMAGE:=}"
+  : "${PORTTA_LOCAL_RELEASE:=false}"
   : "${PORTTA_AUTH_SECRET:=}"
   : "${PORTTA_PANEL_ADVERTISED_HOST:=}"
-  : "${PORTTA_WEB_AUTH:=none}"
-  : "${PORTTA_WEB_AUTH_USER:=}"
-  : "${PORTTA_WEB_AUTH_HASH:=}"
+  : "${PORTTA_AUTH_MODE:=disabled}"
+  : "${PORTTA_PANEL_URL:=}"
+  : "${PORTTA_PANEL_TRUSTED_ORIGINS:=}"
   : "${PORTTA_RUNTIME_DOCS:=true}"
   : "${PORTTA_RUNTIME_API_DOCS:=}"
   : "${PORTTA_DB_NETWORK:=portta-data}"
   : "${PORTTA_DB_VOLUME:=portta-db}"
   : "${PORTTA_RUNTIME_DB_PASSWORD:=}"
   : "${PORTTA_RUNTIME_DATABASE_URL:=}"
+  : "${PORTTA_RUNTIME_DB_MODE:=managed}"
+  : "${PORTTA_RUNTIME_DB_USER:=portta}"
+  : "${PORTTA_RUNTIME_DB_NAME:=portta}"
+  case "$PORTTA_RUNTIME_DB_MODE" in
+    managed) [ -z "$PORTTA_RUNTIME_DATABASE_URL" ] || { err "PORTTA_RUNTIME_DATABASE_URL requires external database mode"; return 1; } ;;
+    external) case "$PORTTA_RUNTIME_DATABASE_URL" in postgres://*|postgresql://*) ;; *) err "external database mode requires a PostgreSQL URL"; return 1 ;; esac ;;
+    *) err "PORTTA_RUNTIME_DB_MODE must be managed or external"; return 1 ;;
+  esac
   : "${PORTTA_TCP:=false}"
   : "${PORTTA_TCP_POSTGRES_PORT:=5432}"
   : "${PORTTA_TCP_REDIS_PORT:=6379}"
@@ -299,7 +267,7 @@ portta_defaults() {
     fi
   fi
 
-  export PORTTA_PROFILE PORTTA_PROJECT_NAME PORTTA_NETWORK \
+  export PORTTA_PROFILE PORTTA_VERSION PORTTA_PROJECT_NAME PORTTA_NETWORK \
     PORTTA_CONTROL_NETWORK PORTTA_ACCESS_NETWORK PORTTA_DOMAIN \
     PORTTA_DOMAIN_MODE PORTTA_AUTO_DOMAIN_PROVIDER PORTTA_PUBLIC_IP \
     PORTTA_BIND_ADDRESS PORTTA_HTTP_PORT PORTTA_HTTPS_PORT \
@@ -308,12 +276,13 @@ portta_defaults() {
     PORTTA_DASHBOARD_BIND_ADDRESS PORTTA_DASHBOARD_PORT \
     PORTTA_DASHBOARD_EXPOSE PORTTA_DASHBOARD_ADVERTISED_HOST \
     PORTTA_WEB PORTTA_WEB_BIND_ADDRESS PORTTA_WEB_PORT \
-    PORTTA_WEB_DEV_PORT PORTTA_WEB_DEV PORTTA_WEB_EXPOSE \
+    PORTTA_WEB_DEV PORTTA_WEB_EXPOSE \
     PORTTA_WEB_HOST PORTTA_WEB_NETWORK PORTTA_WEB_READ_ONLY \
-    PORTTA_WEB_BUILD PORTTA_WEB_IMAGE PORTTA_AUTH_IMAGE PORTTA_AUTH_SECRET PORTTA_PANEL_ADVERTISED_HOST \
+    PORTTA_WEB_BUILD PORTTA_WEB_IMAGE PORTTA_AUTH_IMAGE PORTTA_LOCAL_RELEASE PORTTA_AUTH_SECRET PORTTA_PANEL_ADVERTISED_HOST \
     PORTTA_APPLY PORTTA_RUNNER \
-    PORTTA_WEB_AUTH PORTTA_WEB_AUTH_USER PORTTA_WEB_AUTH_HASH \
+    PORTTA_AUTH_MODE PORTTA_PANEL_URL PORTTA_PANEL_TRUSTED_ORIGINS \
     PORTTA_RUNTIME_DOCS PORTTA_RUNTIME_API_DOCS PORTTA_DB_NETWORK PORTTA_DB_VOLUME \
+    PORTTA_RUNTIME_DB_MODE PORTTA_RUNTIME_DB_NAME PORTTA_RUNTIME_DB_USER \
     PORTTA_RUNTIME_DB_PASSWORD PORTTA_RUNTIME_DATABASE_URL \
     PORTTA_TCP PORTTA_TCP_POSTGRES_PORT PORTTA_TCP_REDIS_PORT \
     TLS_ENABLED TLS_MODE ACME_CHALLENGE ACME_CA_SERVER ACME_DNS_PROVIDER ACME_DNS_RESOLVERS \
@@ -341,41 +310,6 @@ portta_version() {
 # leaves the panel holding an unlinked one and reporting .env as missing until
 # it is recreated. The temporary is kept until the copy lands, so an interrupted
 # run leaves the new contents recoverable beside the file rather than nothing.
-portta_env_set() {
-  local key="$1" value="$2" file="${3:-$PORTTA_ROOT/.env}" tmp
-
-  case "$key" in
-    ''|*[!A-Za-z0-9_]*) err "refusing to write invalid .env key: $key"; return 1 ;;
-  esac
-
-  if [ ! -f "$file" ]; then
-    printf '%s=%s\n' "$key" "$value" > "$file"
-    chmod 600 "$file"
-    return 0
-  fi
-
-  tmp="$file.portta-tmp.$$"
-  if grep -q "^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}$key=" "$file"; then
-    awk -v k="$key" -v v="$value" '
-      $0 ~ "^[[:space:]]*(export[[:space:]]+)?" k "=" { print k "=" v; next }
-      { print }
-    ' "$file" > "$tmp"
-  else
-    cp "$file" "$tmp"
-    printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  fi
-
-  chmod 600 "$tmp"
-  # `cat >` truncates and rewrites the same inode; `mv` would replace it.
-  if cat "$tmp" > "$file"; then
-    rm -f "$tmp"
-  else
-    err "could not write $file; the new contents are in $tmp"
-    return 1
-  fi
-  chmod 600 "$file"
-  export "$key=$value"
-}
 
 # ---------------------------------------------------------------------------
 # Predicates

@@ -123,13 +123,13 @@ export async function waitForPanel(command: Command, timeoutMs = PANEL_WAIT_MS):
   )
 }
 
-/** Stacks, a reachable panel, then the declarative import. Idempotent. */
+/** A reachable panel, then stacks, then the declarative import. Idempotent. */
 export async function applyDemo(command: Command, options: { ensurePanel?: boolean } = {}): Promise<void> {
-  await demoStacksUp(command)
   if (options.ensurePanel !== false && !await panelIsReachable(command)) {
     await webUp({}, command)
   }
   await waitForPanel(command)
+  await demoStacksUp(command)
   await examplesApply({}, command)
 }
 

@@ -9,15 +9,17 @@ import { PreconditionError, UsageError } from '../errors.js'
 import { Output } from '../output.js'
 import { runProcess } from '../process.js'
 import { confirm } from '../confirm.js'
+import { resolveDatabase, databaseClientEnvironment, porttaImages } from 'portta-core'
 
-const TOOLBOX = 'fabioassuncao/portta-toolbox:0.1.0'
 function globals(command: Command) { return command.optsWithGlobals() as { json?: boolean; yes?: boolean; quiet?: boolean; verbose?: boolean; profile?: string } }
 
-async function ensureToolbox(command: Command): Promise<void> {
-  const present = await runProcess('docker', ['image', 'inspect', TOOLBOX], { reject: false })
-  if (present.exitCode === 0) return
+async function ensureToolbox(command: Command): Promise<string> {
   const context = gatewayContext({ profile: globals(command).profile })
-  await runProcess('docker', ['build', '-q', '-t', TOOLBOX, join(context.root, 'docker', 'images', 'toolbox')], { stdio: 'inherit' })
+  const image = porttaImages(context.version).toolbox
+  const present = await runProcess('docker', ['image', 'inspect', image], { reject: false })
+  if (present.exitCode === 0) return image
+  await runProcess('docker', ['build', '-q', '--build-arg', `PORTTA_VERSION=${context.version}`, '-t', image, join(context.root, 'docker', 'images', 'toolbox')], { stdio: 'inherit' })
+  return image
 }
 
 async function containerEnvironment(id: string): Promise<Record<string, string>> {
@@ -49,12 +51,12 @@ export async function clientExec(client: 'psql' | 'mysql' | 'redis-cli', options
   const args: string[] = ['run', '--rm', '-i', ...(process.stdin.isTTY && process.stdout.isTTY ? ['-t'] : []), '--network', network]
   if (client === 'psql' && targetEnv['POSTGRES_PASSWORD']) { env['PGPASSWORD'] = targetEnv['POSTGRES_PASSWORD']; envArgs.push('-e', 'PGPASSWORD') }
   if (client === 'mysql' && targetEnv['MYSQL_PASSWORD']) { env['MYSQL_PWD'] = targetEnv['MYSQL_PASSWORD']; envArgs.push('-e', 'MYSQL_PWD') }
-  args.push(...envArgs, TOOLBOX, client)
+  const toolbox = await ensureToolbox(command)
+  args.push(...envArgs, toolbox, client)
   if (client === 'psql') args.push('-h', options.service, '-p', String(port), ...(options.user ?? targetEnv['POSTGRES_USER'] ? ['-U', options.user ?? targetEnv['POSTGRES_USER']!] : []), ...(options.database ?? targetEnv['POSTGRES_DB'] ? ['-d', options.database ?? targetEnv['POSTGRES_DB']!] : []))
   if (client === 'mysql') args.push('-h', options.service, '-P', String(port), ...(options.user ?? targetEnv['MYSQL_USER'] ? ['-u', options.user ?? targetEnv['MYSQL_USER']!] : []), ...(options.database ?? targetEnv['MYSQL_DATABASE'] ? [options.database ?? targetEnv['MYSQL_DATABASE']!] : []))
   if (client === 'redis-cli') args.push('-h', options.service, '-p', String(port))
   args.push(...passthrough)
-  await ensureToolbox(command)
   await runProcess('docker', args, { env, stdio: 'inherit' })
 }
 
@@ -77,7 +79,7 @@ export async function dbUrl(options: { project: string; service?: string }, comm
   new Output(globals(command)).data(url)
 }
 
-function panelDb(containers: Awaited<ReturnType<typeof inspectContainers>>) { return containers.find((container) => container.labels['portta.component'] === 'db') }
+function panelDb(containers: Awaited<ReturnType<typeof inspectContainers>>, project: string) { return containers.find((container) => container.labels['portta.component'] === 'db' && container.labels['com.docker.compose.project'] === project) }
 export async function dbMigrate(command: Command): Promise<void> {
   const result = await requestPanelMigrate(gatewayContext({ profile: globals(command).profile }))
   const output = new Output(globals(command))
@@ -87,7 +89,13 @@ export async function dbMigrate(command: Command): Promise<void> {
 }
 
 export async function dbStatus(command: Command): Promise<void> {
-  const database = panelDb(await inspectContainers())
+  const context = gatewayContext({ profile: globals(command).profile })
+  if (context.config.databaseMode === 'external') {
+    await panelDbClient('psql', ['-At', '-c', 'select 1'], command)
+    new Output(globals(command)).data({ state: 'ready', mode: 'external', container: null })
+    return
+  }
+  const database = panelDb(await inspectContainers(), context.config.projectName)
   const result = { state: database?.state ?? 'absent', container: database?.name ?? null, network: gatewayContext({ profile: globals(command).profile }).config.databaseNetwork }
   const output = new Output(globals(command)); if (output.json) output.data(result); else output.line(`Panel database: ${result.state}${result.container ? ` (${result.container})` : ''}\nPrivate network: ${result.network}`)
   if (!database || database.state !== 'running') throw new PreconditionError('the panel database is not running', 'run portta web up')
@@ -95,10 +103,16 @@ export async function dbStatus(command: Command): Promise<void> {
 
 async function panelDbClient(program: 'psql' | 'pg_dump' | 'pg_restore', args: string[], command: Command, options: { input?: Uint8Array; inherit?: boolean; tty?: boolean } = {}) {
   const context = gatewayContext({ profile: globals(command).profile })
-  if (!context.env['PORTTA_RUNTIME_DB_PASSWORD']) throw new PreconditionError('the panel database credential is not configured')
-  await ensureToolbox(command)
-  const env = { ...process.env, PGPASSWORD: context.env['PORTTA_RUNTIME_DB_PASSWORD'] }
-  return runProcess('docker', ['run', '--rm', '-i', ...(options.tty && process.stdin.isTTY ? ['-t'] : []), '--network', context.config.databaseNetwork, '-e', 'PGPASSWORD', TOOLBOX, program, '-h', 'db', '-U', 'portta', '-d', 'portta', ...args], { env, input: options.input, stdio: options.inherit ? 'inherit' : 'pipe' })
+  const database = resolveDatabase(context.env)
+  if (!database.url) throw new PreconditionError('the panel database credential is not configured')
+  const toolbox = await ensureToolbox(command)
+  const connection = databaseClientEnvironment(database.url)
+  const env = { ...process.env, ...connection }
+  const network = database.mode === 'managed' ? context.config.databaseNetwork : context.config.network
+  return runProcess('docker', ['run', '--rm', '-i', ...(options.tty && process.stdin.isTTY ? ['-t'] : []), '--network', network,
+    ...Object.keys(connection).flatMap(key => ['-e', key]), toolbox, program,
+    ...(program === 'pg_restore' ? ['--dbname', connection['PGDATABASE']!] : []), ...args],
+    { env, input: options.input, stdio: options.inherit ? 'inherit' : 'pipe' })
 }
 
 export async function dbShell(command: Command): Promise<void> {

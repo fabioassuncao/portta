@@ -18,7 +18,7 @@ const serviceAction = vi.fn()
 const containerAction = vi.fn()
 const openBridge = vi.fn()
 
-vi.mock('../../src/ui/lib/api/index.ts', () => ({
+vi.mock('@/lib/api/index', () => ({
   ApiError,
   api: {
     serviceAction: (...args: unknown[]) => serviceAction(...args),
@@ -27,7 +27,7 @@ vi.mock('../../src/ui/lib/api/index.ts', () => ({
   },
 }))
 
-const { ServiceRow, ServiceTableHead } = await import('../../src/ui/components/entities/service-row.tsx')
+const { ServiceRow, ServiceTableHead } = await import('@/components/entities/service-row')
 
 function renderRow(service = makeService(), onOpen = vi.fn()) {
   const result = renderWithQuery(

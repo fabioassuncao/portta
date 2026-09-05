@@ -4,7 +4,7 @@ A Portta task is local work. It belongs to a Project and may point at a
 repository, an environment and a service. A GitHub issue is an optional
 binding, never the row itself. See [ADR 0032](adr/0032-portta-development-model.md).
 
-The workspace is `#/projects/:slug/tasks/:id`. Creating a task from the panel
+The workspace is `/projects/:slug/tasks/:id`. `/tasks/:id` reaches the same page from an id alone, which is what `portta tasks show` prints. Creating a task from the panel
 is kick-create: **Nova tarefa** inserts a draft and opens that page. The title
 starts as `New task` (shown localised). The first real edit promotes it. An
 untouched draft stays off the board; a second click reopens it; intact drafts

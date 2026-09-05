@@ -16,7 +16,8 @@
 // and tests/unit/apply.test.sh runs both and compares the `docker create`
 // argument lists rather than asking anyone to keep them in step.
 
-export const APPLY_IMAGE = 'fabioassuncao/portta-apply:0.2.0'
+import { porttaImages } from './images.ts'
+
 export const APPLY_CONTAINER = 'portta-apply'
 export const APPLY_COMPONENT = 'apply'
 
@@ -32,7 +33,7 @@ export const APPLY_COMPONENT = 'apply'
  * to report. A plain container carries no project label and is never a
  * candidate.
  */
-export function applyCreateArguments(root: string, spec: string): string[] {
+export function applyCreateArguments(root: string, spec: string, version: string): string[] {
   return [
     'create',
     '--name', APPLY_CONTAINER,
@@ -64,7 +65,7 @@ export function applyCreateArguments(root: string, spec: string): string[] {
     // different path in here would make Docker create empty directories in
     // their place, and Traefik would start with an empty dynamic directory.
     '--volume', `${root}:${root}`,
-    APPLY_IMAGE,
+    porttaImages(version).apply,
     // Fixed at creation. The panel sends no argument, ever. No profile either:
     // `up` falls back to PORTTA_PROFILE from the .env the panel just wrote,
     // which is what makes a profile change apply to itself.
@@ -77,7 +78,7 @@ export function applyCreateArguments(root: string, spec: string): string[] {
  * another root, another image, or an older argument list — from a current one.
  */
 export function applySpec(root: string, version: string): string {
-  return `${APPLY_IMAGE}|${root}|${version}`
+  return `${porttaImages(version).apply}|${root}|${version}`
 }
 
 /**

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithQuery } from './render.tsx'
-import { ResourceUsage } from '../../src/ui/components/entities/resource-usage.tsx'
+import { ResourceUsage } from '@/components/entities/resource-usage'
 
 describe('resource usage', () => {
   it('formats what it knows and leaves out what it does not', () => {

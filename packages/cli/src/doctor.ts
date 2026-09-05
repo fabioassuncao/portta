@@ -249,9 +249,14 @@ export async function runDoctor(context: GatewayContext): Promise<DoctorCheck[]>
   const database = gatewayContainer(containers, 'db')
   const dbNetwork = env['PORTTA_DB_NETWORK'] || `${config.network}-data`
   if (database) {
+    // A stopped database is a failure only when something needs it. With the
+    // panel off it is simply not started, which is what `portta down` leaves
+    // behind and what `portta up` is allowed to pass through.
     add(database.state === 'running'
       ? check('db.state', 'pass', 'panel database', 'running')
-      : check('db.state', 'warn', 'panel database', `state=${database.state}; the panel runs without persistence`, 'portta web up'))
+      : config.webEnabled
+        ? check('db.state', 'fail', 'panel database', `state=${database.state}; the panel refuses to start without it`, 'portta web up')
+        : check('db.state', 'warn', 'panel database', `state=${database.state}; the panel is off, so nothing needs it`, 'portta web up'))
     const dbPublished = publishedBindings(database)
     add(dbPublished
       ? check('db.exposure', 'fail', 'panel database exposure', `publishes host ports: ${dbPublished}`,
@@ -269,7 +274,7 @@ export async function runDoctor(context: GatewayContext): Promise<DoctorCheck[]>
         : check('db.network.internal', 'fail', 'panel data network', `${dbNetwork} is not internal`,
             'recreate the panel database network from docker/compose/features/db.yaml'))
   } else if (config.webEnabled) {
-    add(check('db.state', 'warn', 'panel database', 'container not created; the panel runs without persistence', 'portta web up'))
+    add(check('db.state', 'warn', 'panel database', 'container not created; the panel will refuse to start without it', 'portta web up'))
   }
 
   // --- exposure ------------------------------------------------------------
@@ -333,24 +338,28 @@ export async function runDoctor(context: GatewayContext): Promise<DoctorCheck[]>
   const dashboardRefusal = dashboardExposeRefusal(env)
   if (dashboardRefusal) {
     add(check('dashboard.expose', 'fail', 'traefik dashboard routing', dashboardRefusal,
-      'set PORTTA_DASHBOARD_EXPOSE=local, or run portta web auth set and give the host a domain'))
+      'set PORTTA_DASHBOARD_EXPOSE=local; the dashboard belongs on loopback'))
   } else if (config.dashboardEnabled && config.dashboardExpose === 'domain') {
-    add(check('dashboard.expose', 'pass', 'traefik dashboard routing', `routed on ${config.dashboardAdvertisedHost}, behind portta-web-auth`))
+    add(check('dashboard.expose', 'pass', 'traefik dashboard routing', `routed on ${config.dashboardAdvertisedHost}`))
   }
 
   // --- the panel's front door ----------------------------------------------
   const webBind = env['PORTTA_WEB_BIND_ADDRESS'] || '127.0.0.1'
   const webPort = env['PORTTA_WEB_PORT'] || '8081'
   if (config.webEnabled) {
-    const authFile = join(root, 'config/traefik/dynamic/portta-auth.yaml')
+    // What an older Portta left behind: the keys that held the panel's BasicAuth
+    // hash, and a generated Traefik file that still declares a middleware for
+    // it. Nothing reads either any more.
+    const panelFile = join(root, 'config/traefik/dynamic/portta-panel.yaml')
+    const legacyPanelAuth =
+      (existsSync(panelFile) && readFileSync(panelFile, 'utf8').includes('middlewares:'))
     add(...panelAuthVerdicts({
       expose: env['PORTTA_WEB_EXPOSE'] || 'local',
       bindAddress: webBind,
       port: webPort,
-      authMode: env['PORTTA_WEB_AUTH'] || 'none',
-      authUser: env['PORTTA_WEB_AUTH_USER'] || '',
-      authHash: env['PORTTA_WEB_AUTH_HASH'] || '',
-      middlewareRendered: existsSync(authFile) && readFileSync(authFile, 'utf8').includes('portta-forward-auth:'),
+      authMode: env['PORTTA_AUTH_MODE'] || 'disabled',
+      secretPresent: Boolean(env['PORTTA_AUTH_SECRET']),
+      legacyPanelAuth,
       readOnly: isTrue(env['PORTTA_WEB_READ_ONLY']),
     }))
   }
@@ -468,7 +477,7 @@ export async function runDoctor(context: GatewayContext): Promise<DoctorCheck[]>
     if (env['PORTTA_WEB_EXPOSE'] === 'domain') {
       const advertised = env['PORTTA_PANEL_ADVERTISED_HOST'] ?? ''
       add(config.tlsEnabled
-        ? check('web.expose', 'pass', 'web panel routing', `routed on ${advertised} over HTTPS, behind portta-web-auth`)
+        ? check('web.expose', 'pass', 'web panel routing', `routed on ${advertised} over HTTPS`)
         : check('web.expose', 'fail', 'web panel routing', 'routed on the domain with TLS off, so the credential crosses in clear text',
             'portta config set tls.enabled true'))
       if (config.githubAppEnabled) {

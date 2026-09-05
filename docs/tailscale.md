@@ -1,6 +1,6 @@
 # Tailscale
 
-Open the gateway's [VPN settings](http://127.0.0.1:8081/#/settings/vpn) to edit
+Open the gateway's [Project access settings](http://127.0.0.1:8081/settings/general/project-access) to edit
 the managed Tailscale keys from the panel.
 
 Tailscale is how the gateway becomes reachable without becoming public. The

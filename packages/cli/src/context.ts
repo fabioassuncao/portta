@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
-import { composeFilesForRoot, loadGatewayConfig, mergeEnvironment, parseEnv, type GatewayConfig } from 'portta-core'
+import { resolveDatabase, composeFilesForRoot, loadGatewayConfig, mergeEnvironment, parseEnv, type GatewayConfig } from 'portta-core'
 import { PreconditionError } from './errors.js'
 import { CLI_VERSION } from './version.js'
 
@@ -55,14 +55,8 @@ export function findGatewayRoot(start = process.cwd()): string | null {
   return null
 }
 
-/**
- * `overrides` is for a caller that has just written a value to .env and needs
- * the context to reflect it. The shell environment normally wins over the file
- * — deliberately, so `PORTTA_DOMAIN=foo portta up` works — and that precedence
- * is exactly wrong immediately after a deliberate write: an inherited
- * PORTTA_WEB=false would silently undo the PORTTA_WEB=true that `web up` just
- * made, and Compose would then be asked to start a service no overlay defines.
- */
+/** Explicit operational overrides select services for commands such as web down.
+ * Persistent installation values always win over inherited shell variables. */
 export function gatewayContext(options: { root?: string; profile?: string; required?: boolean; overrides?: Record<string, string> } = {}): GatewayContext {
   const root = options.root ? resolve(options.root) : findGatewayRoot()
   if (!root) {
@@ -78,6 +72,7 @@ export function gatewayContext(options: { root?: string; profile?: string; requi
   for (const [key, value] of Object.entries(options.overrides ?? {})) env[key] = value
   if (options.profile) env['PORTTA_PROFILE'] = options.profile
   env['PORTTA_ROOT'] = root
+  resolveDatabase(env)
   const config = loadGatewayConfig(env)
   // The resolved values go back into the environment Compose is handed, the
   // same way portta_resolve_profile exports them. Traefik bakes PORTTA_DOMAIN
@@ -91,12 +86,14 @@ export function gatewayContext(options: { root?: string; profile?: string; requi
   for (const fileName of files) {
     if (!existsSync(join(root, fileName))) throw new PreconditionError(`missing compose file: ${fileName}`)
   }
+  const version = readFileSync(join(root, 'VERSION'), 'utf8').trim()
+  env['PORTTA_VERSION'] = version
   return {
     root,
     env,
     config,
     composeFiles: files,
-    version: readFileSync(join(root, 'VERSION'), 'utf8').trim(),
+    version,
   }
 }
 

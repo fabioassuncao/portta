@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { columnFor, priorityTone, statusTone } from '../../src/ui/lib/task-presentation.ts'
+import { columnFor, priorityTone, statusTone } from '@/lib/task-presentation'
 
 describe('task presentation', () => {
   it('tones a priority', () => {

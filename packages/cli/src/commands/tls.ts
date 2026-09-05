@@ -1,3 +1,4 @@
+import { patchEnvFile } from 'portta-core'
 // `portta tls`: optional local HTTPS.
 //
 // HTTP works with no setup and is the right default for local development.
@@ -14,7 +15,6 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { platform } from 'node:os'
 import { join } from 'node:path'
 import type { Command } from 'commander'
-import { readEnvFile, setEnvValue, writeEnvFile } from 'portta-core'
 import { gatewayContext } from '../context.js'
 import { requireDocker } from '../docker.js'
 import { PreconditionError } from '../errors.js'
@@ -184,10 +184,7 @@ export async function tlsInit(command: Command): Promise<void> {
   writeFileSync(paths.dynamic, localTlsDynamic())
 
   const envPath = join(context.root, '.env')
-  let text = readEnvFile(envPath)
-  text = setEnvValue(text, 'TLS_ENABLED', 'true')
-  text = setEnvValue(text, 'TLS_MODE', 'local')
-  writeEnvFile(envPath, text)
+  patchEnvFile(envPath, { TLS_ENABLED: 'true', TLS_MODE: 'local' })
   output.progress('TLS enabled in .env')
 
   output.line('')

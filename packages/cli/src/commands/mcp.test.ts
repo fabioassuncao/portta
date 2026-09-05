@@ -51,24 +51,30 @@ describe('panelHeaders', () => {
     expect(panelHeaders({}, 'claude')['X-Portta-Actor']).toBe('claude')
   })
 
+  // A panel in `disabled` mode needs no credential, and sending one would be a
+  // secret in a request that never needed it.
   it('sends a credential only when there is one', () => {
     expect(panelHeaders({}, 'a')['authorization']).toBeUndefined()
-    expect(panelHeaders({ PORTTA_WEB_AUTH_USER: 'dev' }, 'a')['authorization']).toBeUndefined()
-    expect(panelHeaders({ PORTTA_WEB_AUTH_USER: 'dev', PORTTA_PANEL_PASSWORD: 'x' }, 'a')['authorization'])
-      .toBe(`Basic ${Buffer.from('dev:x').toString('base64')}`)
   })
 
-  it('prefers an API Bearer token for remote agent authentication', () => {
-    const headers = panelHeaders({ PORTTA_TOKEN: 'ptt_secret', PORTTA_WEB_AUTH_USER: 'dev', PORTTA_PANEL_PASSWORD: 'x' }, 'codex')
+  it('sends the Bearer token the environment names', () => {
+    const headers = panelHeaders({ PORTTA_TOKEN: 'ptt_secret' }, 'codex')
     expect(headers['authorization']).toBe('Bearer ptt_secret')
     expect(headers['X-Portta-Source']).toBe('cli')
+  })
+
+  // The one for this invocation wins: `--token` is the most explicit thing a
+  // person can say, and it must not be shadowed by a stale environment.
+  it('prefers the token passed in over the environment', () => {
+    expect(panelHeaders({ PORTTA_TOKEN: 'ptt_env' }, 'a', undefined, { token: 'ptt_flag' })['authorization'])
+      .toBe('Bearer ptt_flag')
   })
 
   // The agent talks to the panel. The panel talks to GitHub. Nothing about the
   // App ever reaches this process, and a header named for one would mean it had.
   it('carries nothing that could be a GitHub credential', () => {
     const headers = panelHeaders({
-      PORTTA_WEB_AUTH_USER: 'dev', PORTTA_PANEL_PASSWORD: 'x',
+      PORTTA_TOKEN: 'ptt_secret',
       GITHUB_APP_PRIVATE_KEY_FILE: '/app/state/github/app.pem',
       GITHUB_APP_WEBHOOK_SECRET: 'shhh',
     }, 'agent')

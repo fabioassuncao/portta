@@ -39,7 +39,10 @@ called=$(grep -v '^[[:space:]]*#' "$INSTALLER" \
   | sed -E 's/^[^a-z]*//; s/[[:space:]]*$//' | sort -u)
 # sw_vers is macOS. The portta_* helpers are called inside the subshell that
 # sources the installed scripts/lib, and are defined there.
-allowed="portta_compose_files
+allowed="portta_env_get
+portta_env_set
+portta_prepare_env
+portta_compose_files
 portta_defaults
 portta_load_env
 portta_resolve_profile
@@ -71,7 +74,7 @@ assert_failure bash "$INSTALLER" --panel-access nonsense
 it "a non-numeric panel port fails"
 assert_failure bash "$INSTALLER" --panel-port eighty
 
-it "a panel user with shell metacharacters fails"
+it "a panel user is refused outright: there is no such thing any more"
 assert_failure bash "$INSTALLER" --panel-user 'admin;rm'
 
 it "the four supported access modes reach the parser"
@@ -82,34 +85,44 @@ assert_contains "$SOURCE" "''|public|tailscale|local|domain) ;;"
 # guessed, and configuring the mode without them fails the panel closed.
 it "and domain refuses a name no certificate can cover, or TLS being off"
 assert_contains "$SOURCE" "--panel-access domain needs a real hostname"
-assert_contains "$SOURCE" "--panel-access domain would carry the panel credential in clear text"
+assert_contains "$SOURCE" "--panel-access domain would carry the panel's session cookie in clear text"
 
-describe "the password never reaches a command line"
+describe "the installer invents no panel password at all"
 
-it "there is no --panel-password flag"
+# The panel signs people in itself, and its first account is created once, at
+# /setup or from this host. There is nothing here to generate, hash, hand over
+# or print, so none of it exists.
+it "there is no panel password, on the command line or anywhere else"
 assert_eq "" "$(printf '%s' "$SOURCE" | grep -n -- '--panel-password' || true)"
+assert_eq "" "$(printf '%s' "$SOURCE" | grep -n 'PORTTA_PANEL_PASSWORD' || true)"
+assert_eq "" "$(printf '%s' "$SOURCE" | grep -n 'openssl passwd' || true)"
+assert_eq "" "$(printf '%s' "$SOURCE" | grep -nE 'PORTTA_WEB_AUTH' || true)"
 
-it "it is read from the environment or a no-echo prompt instead"
-assert_contains "$SOURCE" 'PORTTA_PANEL_PASSWORD'
-assert_contains "$SOURCE" 'stty -echo'
+it "and --panel-user is refused rather than silently ignored"
+assert_contains "$SOURCE" '--panel-user is gone'
 
-it "and the help says why"
-assert_contains "$(bash "$INSTALLER" --help 2>&1)" "visible in the shell history"
+it "the help sends people to /setup instead"
+help=$(bash "$INSTALLER" --help 2>&1)
+assert_contains "$help" "created once, in a browser at /setup"
+assert_contains "$help" "--panel-auth <mode>"
 
-it "a generated password is drawn from /dev/urandom, not from \$RANDOM"
-assert_contains "$SOURCE" '/dev/urandom'
-assert_eq "" "$(printf '%s' "$SOURCE" | grep -n 'RANDOM' || true)"
+it "and the mode it chose is written to .env"
+assert_contains "$SOURCE" 'env_set "$ENV_FILE" PORTTA_AUTH_MODE "$PANEL_AUTH"'
 
-it "only the hash is written, and openssl produces it"
-assert_contains "$SOURCE" 'openssl passwd -apr1'
+it "with the URL a browser will be on, because the session cookie depends on it"
+assert_contains "$SOURCE" 'env_set "$ENV_FILE" PORTTA_PANEL_URL'
+
+it "the signing secret is generated once and never printed"
+assert_contains "$SOURCE" 'portta_prepare_env "$ENV_FILE"'
+assert_eq "" "$(printf '%s' "$SOURCE" | grep -n 'say.*PORTTA_AUTH_SECRET' || true)"
 
 describe "an update never destroys what the first install generated"
 
 it ".env is created only when absent"
-assert_contains "$SOURCE" 'if [ ! -f "$ENV_FILE" ]; then'
+assert_contains "$SOURCE" '[ -f "$ENV_FILE" ] || ENV_WAS_CREATED=true'
 
 it "the database credential is generated once"
-assert_contains "$SOURCE" 'if [ -z "$(env_get "$ENV_FILE" PORTTA_RUNTIME_DB_PASSWORD)" ]; then'
+assert_contains "$SOURCE" 'portta_prepare_env "$ENV_FILE"'
 
 it "state, TLS material and the dynamic directory are never in the replaced set"
 replaced=$(printf '%s' "$SOURCE" | sed -n 's/^for path in \(.*\); do$/\1/p' | head -n1)
@@ -136,8 +149,12 @@ assert_contains "$SOURCE" 'unknown panel access mode in $ENV_FILE'
 # This assertion used to pin the exact one-liner, which is how it survived a new
 # mode being added without being listed: the test passed because nothing had
 # changed, which was the defect. It asserts the membership now.
-it "every mode that leaves this host requires a credential"
-assert_contains "$SOURCE" "public|vpn|domain) return 0 ;;"
+it "every mode that leaves this host requires a sign-in"
+assert_contains "$SOURCE" "public|vpn|domain|tailscale) return 0 ;;"
+
+it "and disabled cannot be combined with one"
+assert_contains "$SOURCE" '--panel-auth disabled cannot be combined with --panel-access'
+
 
 it "an existing panel access mode is kept when no flag overrides it"
 assert_contains "$SOURCE" 'PANEL_ACCESS=$(env_get "$ENV_FILE" PORTTA_WEB_EXPOSE)'
@@ -151,15 +168,15 @@ describe "the panel database survives an uninstall and reinstall"
 # password lived. A later install generates a new one, PostgreSQL still expects
 # the old, and the panel starts, answers /health and persists nothing: it is
 # designed to run degraded, which is what makes this failure quiet.
-it "the installer makes .env authoritative over the volume"
-assert_contains "$SOURCE" 'ALTER USER portta WITH PASSWORD'
+it "the installer never changes a persistent cluster credential"
+assert_not_contains "$SOURCE" 'ALTER USER'
 
 it "and the password never crosses a command line to do it"
 assert_contains "$SOURCE" 'POSTGRES_PASSWORD'
 assert_eq "" "$(printf '%s' "$SOURCE" | grep -n 'PASSWORD '"'"'\$DB_PASSWORD' || true)"
 
 it "the credential is verified over TCP, the way the panel connects"
-assert_contains "$SOURCE" 'the panel database rejects the credential in .env'
+assert_contains "$SOURCE" 'the database rejects the configured credential'
 
 it "and uninstall says where that credential went"
 assert_contains "$SOURCE" 'its password lived in the .env just removed'
@@ -256,13 +273,22 @@ assert_contains "$SOURCE" 'recorded only; applications stay unexposed'
 it "and it says so at the end"
 assert_contains "$SOURCE" 'publishing the panel published nothing else'
 
-describe "a public panel is verified, not assumed"
+describe "the panel is verified, not assumed"
 
-it "an unauthenticated request must be refused before success is reported"
-assert_contains "$SOURCE" 'if [ "$code" = "401" ]; then'
+# The old probe expected 401 from every routed panel, because Traefik refused
+# everything without a credential. The panel answers this one endpoint to
+# everybody now -- a browser has to learn whether to show a sign-in page -- and
+# it is the only thing that can say whether an owner exists.
+it "the installer asks the panel what it is, and fails when it will not say"
+assert_contains "$SOURCE" '/api/auth/status'
+assert_contains "$SOURCE" 'the panel did not answer on ${PANEL_PROBE_WHERE}'
 
-it "and a non-401 fails the run"
-assert_contains "$SOURCE" 'expected HTTP 401 from the panel without credentials'
+it "a panel that still needs its first account says so"
+assert_contains "$SOURCE" '"setupRequired":true'
+assert_contains "$SOURCE" 'the first account is created at /setup'
+
+it "and a panel running open while .env says required is a failure"
+assert_contains "$SOURCE" 'running in open mode with PORTTA_AUTH_MODE=required'
 
 describe "Tailscale is observed, never driven"
 
@@ -416,15 +442,15 @@ assert_eq "" "$(printf '%s' "$SOURCE" | grep -E '^probe\(\) \{' || true)"
 # In `domain` mode nothing is published on the host, so a probe at a host port
 # would check a door that does not exist.
 it "reaches a routed panel by name, through the gateway entrypoint"
-assert_contains "$SOURCE" '--resolve "${ADVERTISED}:443:127.0.0.1"'
+assert_contains "$SOURCE" '--resolve ${ADVERTISED}:443:127.0.0.1'
 
-describe "every mode that publishes the panel gets a credential"
+describe "every mode that publishes the panel makes it sign people in"
 
 # `domain` was missing from needs_auth when the mode was added, so a fresh
-# install with it generated no password at all -- and the CLI refuses `domain`
+# install with it generated no credential at all -- and the CLI refused `domain`
 # without one, leaving a host that installed cleanly and could not start its
-# own panel. The credential step has to cover every mode that puts the panel
-# beyond this host.
+# own panel. The step has to cover every mode that puts the panel beyond this
+# host, which is now every mode but `local`.
 it "the modes that do not publish it are still skipped"
 assert_contains "$SOURCE" "needs_auth() {"
 assert_eq "" "$(printf '%s' "$SOURCE" | grep -E 'needs_auth\(\) \{ \[' || true)"

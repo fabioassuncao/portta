@@ -106,6 +106,16 @@ PY
     assert_contains "$ids" "$id"
   done
 
+  # The panel is what stands in front of the panel now, so the verdict is about
+  # the two decisions agreeing: a panel reachable from another machine must sign
+  # people in, and one that signs people in must have a secret to do it with.
+  it "and on the panel's own front door, once the panel is enabled"
+  if printf '%s' "$ids" | grep -q 'web\.auth'; then
+    assert_contains "$ids" "web.auth"
+  else
+    skip "the panel is not enabled on this host"
+  fi
+
   it "and on the host checks a container could not make honestly"
   for id in tools.git vpn.tailscale agents.claude; do
     assert_contains "$ids" "$id"
